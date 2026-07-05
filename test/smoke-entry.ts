@@ -54,6 +54,27 @@ for (let i = 0; i < TALISMANS.length; i++) {
 }
 console.log("[smoke] all talismans + actives ok, clones:", (game as any).clones.length);
 
+// 2b) Touch controls: drive the Input touch handlers directly (joystick +
+// action button + auto-aim) to catch runtime errors in the mobile path.
+{
+  const input = (game as any).input;
+  input.usingTouch = true;
+  input.touchControlsEnabled = true;
+  const ev = (touches: any[]) => ({ changedTouches: touches, preventDefault() {} });
+  input.onTouchStart(ev([{ identifier: 1, clientX: 200, clientY: 500 }])); // joystick
+  input.onTouchStart(ev([{ identifier: 2, clientX: 1158, clientY: 600 }])); // attack
+  input.onTouchMove(ev([{ identifier: 1, clientX: 270, clientY: 450 }]));
+  step(24);
+  const mv = input.moveVector();
+  const joy = input.joystick();
+  console.log(
+    `[smoke] touch: move=(${mv.x.toFixed(2)},${mv.y.toFixed(2)}) joyActive=${joy.active} attackHeld=${input.isButtonHeld("light")}`
+  );
+  input.onTouchEnd(ev([{ identifier: 1 }, { identifier: 2 }]));
+  step(6);
+  console.log("[smoke] touch controls ok, joyActive after release:", input.joystick().active);
+}
+
 // Simulate clearing rooms and drafting by directly advancing.
 for (let r = 0; r < 6; r++) {
   // Kill any enemies to force clear.

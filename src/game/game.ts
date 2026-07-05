@@ -17,6 +17,7 @@ import { TalismanState, draftTalismans, Talisman } from "./talismans";
 import { Meta } from "./meta";
 import { RunPlan, RoomPlan, decorateRoom, drawDecoration, Decoration } from "./world";
 import { drawHUD } from "../ui/hud";
+import { drawTouchControls } from "../ui/touch";
 import {
   Button,
   drawDraft,
@@ -105,32 +106,50 @@ export class Game {
     this.camera = new Camera(this.w, this.h);
     this.input = new Input(canvas);
     this.paper = new PaperTexture(this.w, this.h);
-    window.addEventListener("resize", () => this.resize());
+    window.addEventListener("resize", this.resize);
+    window.addEventListener("orientationchange", this.resize);
+    // Mobile browsers change the visible area as toolbars show/hide.
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", this.resize);
+    }
 
-    // Any click/key resumes audio (autoplay policy).
+    // Any click/key/touch resumes audio (autoplay policy).
     const unlock = () => audio.resume();
     window.addEventListener("pointerdown", unlock, { once: false });
     window.addEventListener("keydown", unlock, { once: false });
+    window.addEventListener("touchstart", unlock, { once: false });
   }
 
-  private resize() {
-    const maxW = window.innerWidth;
-    const maxH = window.innerHeight;
+  private resize = () => {
+    // Prefer the visual viewport (accounts for mobile browser chrome).
+    const vv = window.visualViewport;
+    const maxW = Math.max(1, vv ? vv.width : window.innerWidth);
+    const maxH = Math.max(1, vv ? vv.height : window.innerHeight);
     const aspect = 16 / 9;
+    // Fit the 16:9 stage inside the viewport (letterbox on any resolution).
     let w = maxW;
     let h = w / aspect;
     if (h > maxH) {
       h = maxH;
       w = h * aspect;
     }
-    // Internal resolution fixed for consistent gameplay; CSS scales it.
+    // Internal render resolution is fixed for consistent gameplay; CSS scales
+    // it to the computed display size, so it works at any resolution.
     this.w = 1280;
     this.h = 720;
     this.canvas.width = this.w;
     this.canvas.height = this.h;
-    this.canvas.style.width = `${Math.floor(w)}px`;
-    this.canvas.style.height = `${Math.floor(h)}px`;
-  }
+    this.canvas.style.width = `${Math.round(w)}px`;
+    this.canvas.style.height = `${Math.round(h)}px`;
+
+    // Portrait rotate hint (touch devices only).
+    const hint = document.getElementById("rotate-hint");
+    if (hint) {
+      const portrait = maxH > maxW * 1.05;
+      const touch = this.input?.usingTouch || "ontouchstart" in window;
+      hint.style.display = portrait && touch ? "grid" : "none";
+    }
+  };
 
   start() {
     requestAnimationFrame(this.loop);
@@ -146,8 +165,13 @@ export class Game {
 
     this.input.tick(now);
 
-    // Detect click edge (mouse pressed this frame).
-    this.mouseClicked = this.input.mouse.down && !this.prevMouseDown;
+    // Gameplay touch controls (joystick/buttons) are only live while playing;
+    // elsewhere touches act as menu taps.
+    this.input.touchControlsEnabled = this.input.usingTouch && this.state === "playing";
+
+    // Detect click edge (mouse press this frame) or a menu tap.
+    this.mouseClicked =
+      (this.input.mouse.down && !this.prevMouseDown) || this.input.consumeTap();
     this.prevMouseDown = this.input.mouse.down;
     this.clickConsumed = false;
 
@@ -237,6 +261,11 @@ export class Game {
     // Haste (still mind): player world runs at closer to real time.
     const pdt = this.hasteTimer > 0 ? rawDt * 0.85 : dt;
     if (this.hasteTimer > 0) this.hasteTimer -= rawDt;
+
+    // On touch there is no cursor: auto-aim toward the nearest foe (falling
+    // back to movement direction) by driving the same "mouse" point the rest
+    // of the aiming code already reads.
+    if (this.input.usingTouch) this.updateTouchAim();
 
     // Update player with (possibly hastened) dt.
     const pctx = this.mkContext(pdt);
@@ -345,6 +374,39 @@ export class Game {
         }
       }
     }
+  }
+
+  private updateTouchAim() {
+    const p = this.player;
+    // Nearest target among all foes (enemies + boss).
+    let tx = 0;
+    let ty = 0;
+    let found = false;
+    let bd = Infinity;
+    for (const a of this.actors) {
+      if (a.team !== "enemy" || a.dead) continue;
+      const d = dist(p.x, p.y, a.x, a.y);
+      if (d < bd) {
+        bd = d;
+        tx = a.x;
+        ty = a.y;
+        found = true;
+      }
+    }
+    if (!found) {
+      // No target: aim where the player is moving, else keep current facing.
+      const mv = this.input.moveVector();
+      if (mv.x !== 0 || mv.y !== 0) {
+        tx = p.x + mv.x * 120;
+        ty = p.y + mv.y * 120;
+      } else {
+        tx = p.x + Math.cos(p.facing) * 120;
+        ty = p.y + Math.sin(p.facing) * 120;
+      }
+    }
+    const s = this.camera.worldToScreen(tx, ty);
+    this.input.mouse.x = s.x;
+    this.input.mouse.y = s.y;
   }
 
   private nearestEnemy(x: number, y: number): Enemy | null {
@@ -605,6 +667,9 @@ export class Game {
         );
       this.renderRoomBanner(ctx);
       if (this.boss) this.renderBossBar(ctx);
+      // On-screen touch controls sit above the HUD during play.
+      if (this.input.usingTouch && this.state === "playing")
+        drawTouchControls(ctx, this.input);
     }
 
     // Overlays / menus.
@@ -867,6 +932,8 @@ export class Game {
   }
 
   private renderCursor(ctx: CanvasRenderingContext2D, mx: number, my: number) {
+    // No crosshair on touch — aim is automatic and there is no pointer.
+    if (this.input.usingTouch) return;
     ctx.save();
     ctx.translate(mx, my);
     ctx.fillStyle = Palette.seal;

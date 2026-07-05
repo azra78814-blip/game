@@ -29,6 +29,8 @@ npm run preview  # serves the built game on http://localhost:4173
 | Talisman ability | `E` / `Q` |
 | Pause | `Esc` |
 
+**Mobile / touch:** fully playable on phones and tablets. A floating brush **joystick** (left thumb) moves; a cluster of calligraphic **action buttons** (right thumb) handles attack/heavy/dodge/parry/skill, with a pause button up top. Aiming is **automatic** (locks the nearest foe). The stage scales to any resolution or orientation and shows a rotate hint in portrait.
+
 **Parrying is the heart of the combat**: a clean parry slows time, heals you, refunds ink, and unleashes a counter. Read the red telegraph flare — it means a hit is coming.
 
 ## Design pillars

@@ -40,6 +40,41 @@ interface Buffered {
   time: number;
 }
 
+// On-screen action buttons for touch, laid out in the fixed 1280x720 internal
+// space (bottom-right thumb cluster). Both hit-testing and rendering read this.
+export interface TouchButtonDef {
+  action: Action;
+  x: number;
+  y: number;
+  r: number;
+  kanji: string;
+  label: string;
+}
+
+export const TOUCH_BUTTONS: TouchButtonDef[] = [
+  { action: "light", x: 1158, y: 600, r: 58, kanji: "斬", label: "Attack" },
+  { action: "heavy", x: 1040, y: 588, r: 40, kanji: "重", label: "Heavy" },
+  { action: "dodge", x: 1108, y: 492, r: 46, kanji: "避", label: "Dodge" },
+  { action: "parry", x: 1236, y: 512, r: 40, kanji: "受", label: "Parry" },
+  { action: "ability", x: 1238, y: 626, r: 38, kanji: "術", label: "Skill" },
+  { action: "pause", x: 640, y: 40, r: 24, kanji: "休", label: "Pause" },
+];
+
+type TouchRec =
+  | { kind: "joy" }
+  | { kind: "button"; action: Action }
+  | { kind: "tap" };
+
+export interface JoystickState {
+  active: boolean;
+  baseX: number;
+  baseY: number;
+  knobX: number;
+  knobY: number;
+}
+
+const JOY_MAX = 92;
+
 export class Input {
   private down = new Set<Action>();
   private pressedEdge = new Set<Action>();
@@ -47,6 +82,19 @@ export class Input {
   readonly mouse = { x: 0, y: 0, worldX: 0, worldY: 0, down: false, rightDown: false };
   private now = 0;
   private canvas: HTMLCanvasElement;
+
+  // ---- Touch state ----
+  usingTouch = false;
+  /** When true, gameplay touch controls (joystick/buttons) are active; when
+   *  false, touches behave as menu taps. Set by the game per frame. */
+  touchControlsEnabled = false;
+  private touches = new Map<number, TouchRec>();
+  private joyId: number | null = null;
+  private joyBaseX = 0;
+  private joyBaseY = 0;
+  private joyX = 0;
+  private joyY = 0;
+  private tapLatched = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -56,6 +104,134 @@ export class Input {
     canvas.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("touchstart", this.onTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", this.onTouchMove, { passive: false });
+    window.addEventListener("touchend", this.onTouchEnd, { passive: false });
+    window.addEventListener("touchcancel", this.onTouchEnd, { passive: false });
+  }
+
+  private mapPoint(clientX: number, clientY: number): { x: number; y: number } {
+    const r = this.canvas.getBoundingClientRect();
+    return {
+      x: ((clientX - r.left) / r.width) * this.canvas.width,
+      y: ((clientY - r.top) / r.height) * this.canvas.height,
+    };
+  }
+
+  private pressAction(a: Action) {
+    if (!this.down.has(a)) this.pressedEdge.add(a);
+    this.down.add(a);
+    this.buffer.set(a, { time: this.now });
+  }
+
+  private onTouchStart = (e: TouchEvent) => {
+    this.usingTouch = true;
+    for (const t of Array.from(e.changedTouches)) {
+      const p = this.mapPoint(t.clientX, t.clientY);
+      if (!this.touchControlsEnabled) {
+        // Menu / overlay: treat as a tap-click at that point.
+        this.mouse.x = p.x;
+        this.mouse.y = p.y;
+        this.mouse.down = true;
+        this.tapLatched = true;
+        this.touches.set(t.identifier, { kind: "tap" });
+        continue;
+      }
+      // Gameplay: buttons first, then joystick on the left, else attack.
+      let hitAction: Action | null = null;
+      for (const b of TOUCH_BUTTONS) {
+        const dx = p.x - b.x;
+        const dy = p.y - b.y;
+        if (dx * dx + dy * dy <= b.r * b.r) {
+          hitAction = b.action;
+          break;
+        }
+      }
+      if (hitAction) {
+        this.pressAction(hitAction);
+        this.touches.set(t.identifier, { kind: "button", action: hitAction });
+      } else if (p.x < this.canvas.width * 0.5 && this.joyId === null) {
+        this.joyId = t.identifier;
+        this.joyBaseX = this.joyX = p.x;
+        this.joyBaseY = this.joyY = p.y;
+        this.touches.set(t.identifier, { kind: "joy" });
+      } else {
+        // Empty right-side tap acts as a light attack.
+        this.pressAction("light");
+        this.touches.set(t.identifier, { kind: "button", action: "light" });
+      }
+    }
+    e.preventDefault();
+  };
+
+  private onTouchMove = (e: TouchEvent) => {
+    for (const t of Array.from(e.changedTouches)) {
+      const rec = this.touches.get(t.identifier);
+      if (!rec) continue;
+      const p = this.mapPoint(t.clientX, t.clientY);
+      if (rec.kind === "joy") {
+        this.joyX = p.x;
+        this.joyY = p.y;
+      } else if (rec.kind === "tap") {
+        this.mouse.x = p.x;
+        this.mouse.y = p.y;
+      }
+    }
+    e.preventDefault();
+  };
+
+  private onTouchEnd = (e: TouchEvent) => {
+    for (const t of Array.from(e.changedTouches)) {
+      const rec = this.touches.get(t.identifier);
+      if (!rec) continue;
+      this.touches.delete(t.identifier);
+      if (rec.kind === "joy") {
+        if (this.joyId === t.identifier) this.joyId = null;
+      } else if (rec.kind === "button") {
+        // Release the held action only if no other touch still holds it.
+        let stillHeld = false;
+        for (const r of this.touches.values())
+          if (r.kind === "button" && r.action === rec.action) stillHeld = true;
+        if (!stillHeld) this.down.delete(rec.action);
+      } else if (rec.kind === "tap") {
+        this.mouse.down = false;
+      }
+    }
+    e.preventDefault();
+  };
+
+  /** One-shot tap flag for menu clicks (robust against same-frame down/up). */
+  consumeTap(): boolean {
+    if (this.tapLatched) {
+      this.tapLatched = false;
+      return true;
+    }
+    return false;
+  }
+
+  joystick(): JoystickState {
+    if (this.joyId === null)
+      return { active: false, baseX: 0, baseY: 0, knobX: 0, knobY: 0 };
+    let dx = this.joyX - this.joyBaseX;
+    let dy = this.joyY - this.joyBaseY;
+    const len = Math.hypot(dx, dy);
+    if (len > JOY_MAX) {
+      dx = (dx / len) * JOY_MAX;
+      dy = (dy / len) * JOY_MAX;
+    }
+    return {
+      active: true,
+      baseX: this.joyBaseX,
+      baseY: this.joyBaseY,
+      knobX: this.joyBaseX + dx,
+      knobY: this.joyBaseY + dy,
+    };
+  }
+
+  isButtonHeld(a: Action): boolean {
+    for (const r of this.touches.values())
+      if (r.kind === "button" && r.action === a) return true;
+    return false;
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -126,8 +302,16 @@ export class Input {
     return false;
   }
 
-  /** Normalized movement vector from held direction keys. */
+  /** Movement vector from the touch joystick (analog) or held direction keys. */
   moveVector(): { x: number; y: number } {
+    if (this.joyId !== null) {
+      const dx = this.joyX - this.joyBaseX;
+      const dy = this.joyY - this.joyBaseY;
+      const len = Math.hypot(dx, dy);
+      if (len < JOY_MAX * 0.18) return { x: 0, y: 0 }; // deadzone
+      const m = Math.min(len, JOY_MAX);
+      return { x: (dx / len) * (m / JOY_MAX), y: (dy / len) * (m / JOY_MAX) };
+    }
     let x = 0;
     let y = 0;
     if (this.down.has("left")) x -= 1;

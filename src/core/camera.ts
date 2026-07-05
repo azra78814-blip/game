@@ -134,4 +134,11 @@ export class Camera {
       y: (sy - this.viewH / 2) / this.zoom + this.y - this.offsetY / this.zoom,
     };
   }
+
+  worldToScreen(wx: number, wy: number): { x: number; y: number } {
+    return {
+      x: (wx - this.x) * this.zoom + this.offsetX + this.viewW / 2,
+      y: (wy - this.y) * this.zoom + this.offsetY + this.viewH / 2,
+    };
+  }
 }

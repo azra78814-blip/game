@@ -59,6 +59,41 @@ canvas#game {
   pointer-events: none;
 }
 
+#rotate-hint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  background: radial-gradient(circle at 50% 40%, #efe8d7 0%, #cbc1a8 90%);
+  z-index: 60;
+  text-align: center;
+  padding: 24px;
+}
+
+.rotate-glyph {
+  font-size: 72px;
+  color: var(--seal);
+  animation: rotate-swing 2s ease-in-out infinite;
+}
+
+.rotate-text {
+  font-size: 16px;
+  letter-spacing: 2px;
+  color: var(--ink-soft);
+}
+
+@keyframes rotate-swing {
+  0%,
+  100% {
+    transform: rotate(-12deg);
+  }
+  50% {
+    transform: rotate(78deg);
+  }
+}
+
 .brush-seal {
   width: 96px;
   height: 96px;

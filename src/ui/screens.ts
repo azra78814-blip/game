@@ -408,6 +408,7 @@ export function drawHelp(
     ["Parry", "F  /  L   — time it to deflect & counter (slows time)"],
     ["Talisman Ability", "E  /  Q   — spends ink"],
     ["Pause", "Esc"],
+    ["Mobile", "Left stick moves · right buttons act · aim is automatic"],
   ];
   ctx.textAlign = "left";
   const x = w / 2 - 260;
