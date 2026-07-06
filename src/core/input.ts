@@ -40,8 +40,11 @@ interface Buffered {
   time: number;
 }
 
-// On-screen action buttons for touch, laid out in the fixed 1280x720 internal
-// space (bottom-right thumb cluster). Both hit-testing and rendering read this.
+// On-screen action buttons for touch. The internal render size is no longer a
+// fixed 1280x720 — its width tracks the viewport aspect — so the thumb cluster
+// is laid out relative to the live canvas size (w,h) instead of hard-coded
+// coordinates. Both hit-testing and rendering call layoutTouchButtons() so they
+// always agree.
 export interface TouchButtonDef {
   action: Action;
   x: number;
@@ -51,14 +54,18 @@ export interface TouchButtonDef {
   label: string;
 }
 
-export const TOUCH_BUTTONS: TouchButtonDef[] = [
-  { action: "light", x: 1158, y: 600, r: 58, kanji: "斬", label: "Attack" },
-  { action: "heavy", x: 1040, y: 588, r: 40, kanji: "重", label: "Heavy" },
-  { action: "dodge", x: 1108, y: 492, r: 46, kanji: "避", label: "Dodge" },
-  { action: "parry", x: 1236, y: 512, r: 40, kanji: "受", label: "Parry" },
-  { action: "ability", x: 1238, y: 626, r: 38, kanji: "術", label: "Skill" },
-  { action: "pause", x: 640, y: 40, r: 24, kanji: "休", label: "Pause" },
-];
+export function layoutTouchButtons(w: number, h: number): TouchButtonDef[] {
+  // Main attack anchored to the bottom-right corner; the rest fan up and to the
+  // left in a generously spaced arc (the extra width is free real estate now).
+  return [
+    { action: "light", x: w - 120, y: h - 120, r: 58, kanji: "斬", label: "Attack" },
+    { action: "dodge", x: w - 120, y: h - 268, r: 46, kanji: "避", label: "Dodge" },
+    { action: "heavy", x: w - 262, y: h - 150, r: 44, kanji: "重", label: "Heavy" },
+    { action: "parry", x: w - 266, y: h - 300, r: 40, kanji: "受", label: "Parry" },
+    { action: "ability", x: w - 400, y: h - 120, r: 38, kanji: "術", label: "Skill" },
+    { action: "pause", x: w * 0.5, y: 46, r: 26, kanji: "休", label: "Pause" },
+  ];
+}
 
 type TouchRec =
   | { kind: "joy" }
@@ -139,7 +146,7 @@ export class Input {
       }
       // Gameplay: buttons first, then joystick on the left, else attack.
       let hitAction: Action | null = null;
-      for (const b of TOUCH_BUTTONS) {
+      for (const b of layoutTouchButtons(this.canvas.width, this.canvas.height)) {
         const dx = p.x - b.x;
         const dy = p.y - b.y;
         if (dx * dx + dy * dy <= b.r * b.r) {

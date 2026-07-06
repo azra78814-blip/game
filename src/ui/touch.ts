@@ -1,17 +1,18 @@
 import { TAU } from "../core/math";
-import { Input, TOUCH_BUTTONS } from "../core/input";
+import { Input, layoutTouchButtons } from "../core/input";
 import { Palette } from "../render/palette";
 
 // Draws the on-screen touch controls in the ink aesthetic: a floating brush
 // joystick where the thumb rests, and a thumb-cluster of calligraphic action
-// buttons. Rendered in screen space (1280x720 internal), so it lines up with
-// the hit-testing in Input.
+// buttons. Laid out from the live canvas size so it lines up with the
+// hit-testing in Input.
 
 export function drawTouchControls(ctx: CanvasRenderingContext2D, input: Input) {
   ctx.save();
 
-  // Action buttons (bottom-right).
-  for (const b of TOUCH_BUTTONS) {
+  // Action buttons (bottom-right), positioned from the current canvas size.
+  const buttons = layoutTouchButtons(ctx.canvas.width, ctx.canvas.height);
+  for (const b of buttons) {
     const held = input.isButtonHeld(b.action);
     ctx.globalAlpha = held ? 0.95 : 0.5;
     // Ink disc.
