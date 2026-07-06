@@ -368,6 +368,48 @@ export class AudioEngine {
     });
   }
 
+  /** Glassy inharmonic wind-bell (fūrin) chime for ambient props. */
+  chime(pitch = 1) {
+    if (!this.ctx) return;
+    const time = this.t();
+    const base = 1050 * pitch;
+    // Inharmonic partials give the bright, bell-like shimmer.
+    [1, 2.76, 5.4].forEach((m, i) => {
+      const osc = this.ctx!.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = base * m * 0.5;
+      this.env(osc, time, 0.001, 0.16 / (i + 1), 1.0 - i * 0.22);
+      osc.start(time);
+      osc.stop(time + 1.2);
+    });
+  }
+
+  /** Sharp ceramic crack for a breaking urn. */
+  shatter(power = 1) {
+    if (!this.ctx) return;
+    const time = this.t();
+    // Filtered noise crack that darkens as it decays.
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBurst(0.2);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(2600, time);
+    bp.frequency.exponentialRampToValueAtTime(700, time + 0.14);
+    bp.Q.value = 0.7;
+    src.connect(bp);
+    this.env(bp, time, 0.001, 0.34 * power, 0.2);
+    src.start(time);
+    // A couple of shard "tinks".
+    [1, 1.58].forEach((m, i) => {
+      const osc = this.ctx!.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.value = 880 * m;
+      this.env(osc, time + i * 0.02, 0.001, 0.12, 0.12);
+      osc.start(time + i * 0.02);
+      osc.stop(time + 0.24);
+    });
+  }
+
   bossRoar() {
     if (!this.ctx) return;
     const time = this.t();

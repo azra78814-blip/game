@@ -37,7 +37,6 @@ body {
 canvas#game {
   display: block;
   image-rendering: auto;
-  box-shadow: 0 30px 90px rgba(20, 16, 10, 0.45), 0 4px 14px rgba(20, 16, 10, 0.3);
   background: var(--paper);
   cursor: crosshair;
 }

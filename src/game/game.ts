@@ -16,6 +16,7 @@ import type { Actor, GameContext, HitInfo } from "./types";
 import { TalismanState, draftTalismans, Talisman } from "./talismans";
 import { Meta } from "./meta";
 import { RunPlan, RoomPlan, decorateRoom, drawDecoration, Decoration } from "./world";
+import { Interactable, spawnProps } from "../entities/prop";
 import { drawHUD } from "../ui/hud";
 import { drawTouchControls } from "../ui/touch";
 import {
@@ -71,6 +72,7 @@ export class Game {
   private roomIndex = 0;
   private roomPlan!: RoomPlan;
   private decorations: Decoration[] = [];
+  private props: Interactable[] = [];
   private actors: Actor[] = [];
   private enemies: Enemy[] = [];
   private boss: Boss | null = null;
@@ -125,22 +127,24 @@ export class Game {
     const vv = window.visualViewport;
     const maxW = Math.max(1, vv ? vv.width : window.innerWidth);
     const maxH = Math.max(1, vv ? vv.height : window.innerHeight);
-    const aspect = 16 / 9;
-    // Fit the 16:9 stage inside the viewport (letterbox on any resolution).
-    let w = maxW;
-    let h = w / aspect;
-    if (h > maxH) {
-      h = maxH;
-      w = h * aspect;
-    }
-    // Internal render resolution is fixed for consistent gameplay; CSS scales
-    // it to the computed display size, so it works at any resolution.
-    this.w = 1280;
-    this.h = 720;
+
+    // Fill the entire viewport — no letterbox bars. Internal render height is
+    // fixed for a consistent gameplay scale; the width follows the viewport's
+    // aspect ratio, so the canvas covers the whole screen without stretching
+    // (wider screens simply reveal more of the world around the player).
+    const BASE_H = 720;
+    this.h = BASE_H;
+    this.w = Math.max(1, Math.round(BASE_H * (maxW / maxH)));
     this.canvas.width = this.w;
     this.canvas.height = this.h;
-    this.canvas.style.width = `${Math.round(w)}px`;
-    this.canvas.style.height = `${Math.round(h)}px`;
+    this.canvas.style.width = `${Math.round(maxW)}px`;
+    this.canvas.style.height = `${Math.round(maxH)}px`;
+
+    // Keep the camera and paper texture in sync with the new render size.
+    // (Both are undefined on the very first call from the constructor; they are
+    // then created with the freshly computed w/h.)
+    this.camera?.resize(this.w, this.h);
+    this.paper?.resize(this.w, this.h);
 
     // Portrait rotate hint (touch devices only).
     const hint = document.getElementById("rotate-hint");
@@ -298,6 +302,7 @@ export class Game {
     // Particles + ambient.
     this.particles.update(dt);
     this.updateAmbient(rawDt);
+    this.updateProps(ctx);
     this.roomBanner = Math.max(0, this.roomBanner - rawDt);
 
     // Wave / clear logic.
@@ -533,6 +538,48 @@ export class Game {
     }
   }
 
+  /** Advance interactive props and let player attacks strike them. */
+  private updateProps(ctx: GameContext) {
+    let anyBroken = false;
+    for (const p of this.props) {
+      if (!p.alive) {
+        anyBroken = true;
+        continue;
+      }
+      p.update(ctx);
+      // A player swing overlapping the prop strikes it (once per swing id).
+      for (const h of this.hits) {
+        if (h.team !== "player" || p.hitIds.has(h.id)) continue;
+        if (dist(h.x, h.y, p.x, p.y) > h.radius + p.radius) continue;
+        if (h.arc < Math.PI) {
+          const ang = Math.atan2(p.y - h.y, p.x - h.x);
+          const diff = Math.abs(((ang - h.angle + Math.PI * 3) % TAU) - Math.PI);
+          if (diff > h.arc) continue;
+        }
+        p.hitIds.add(h.id);
+        const wasBroken = p.broken;
+        p.strike(ctx, h.x, h.y);
+        if (!wasBroken && p.broken) this.rewardUrn(p);
+      }
+    }
+    if (anyBroken) this.props = this.props.filter((p) => p.alive);
+  }
+
+  /** A smashed urn yields a little essence and, now and then, a sip of health. */
+  private rewardUrn(p: Interactable) {
+    const gained = 2;
+    this.runEssence += gained;
+    this.particles.floatText(p.x, p.y - 26, `+${gained}`, Palette.gold);
+    audio.pickup();
+    if (this.player && !this.player.dead && fx.bool(0.22)) {
+      const heal = Math.min(this.player.maxHp - this.player.hp, 6);
+      if (heal > 0) {
+        this.player.hp += heal;
+        this.particles.floatText(p.x, p.y - 42, `+${Math.round(heal)}`, Palette.jade);
+      }
+    }
+  }
+
   // ---- Room / run setup --------------------------------------------------
   private beginRun() {
     this.runSeed = (Math.random() * 1e9) >>> 0;
@@ -562,6 +609,7 @@ export class Game {
   private loadRoom(index: number) {
     this.roomPlan = this.run.rooms[index];
     this.decorations = decorateRoom(this.roomPlan);
+    this.props = spawnProps(this.roomPlan);
     this.enemies = [];
     this.projectiles = [];
     this.clones = [];
@@ -726,8 +774,15 @@ export class Game {
     if (this.boss && !this.boss.dead) drawList.push({ y: this.boss.y, fn: () => this.boss!.draw(ctx, ctxGame) });
     if (this.player && !this.player.dead)
       drawList.push({ y: this.player.y, fn: () => this.player.draw(ctx, ctxGame) });
+    // Ground-standing props (urns, bells) depth-sort with the entities so the
+    // player can pass in front of and behind them.
+    for (const p of this.props)
+      if (p.kind !== "flutter") drawList.push({ y: p.y, fn: () => p.draw(ctx) });
     drawList.sort((a, b) => a.y - b.y);
     for (const d of drawList) d.fn();
+
+    // Butterfly clusters drift above the scene.
+    for (const p of this.props) if (p.kind === "flutter") p.draw(ctx);
 
     // Ink clones drift with the entities.
     for (const c of this.clones) c.draw(ctx);

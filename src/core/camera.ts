@@ -24,13 +24,19 @@ export class Camera {
   private timeScaleCur = 1;
   private timeScaleHold = 0;
 
-  readonly viewW: number;
-  readonly viewH: number;
+  viewW: number;
+  viewH: number;
 
   offsetX = 0;
   offsetY = 0;
 
   constructor(viewW: number, viewH: number) {
+    this.viewW = viewW;
+    this.viewH = viewH;
+  }
+
+  /** Update the viewport dimensions when the render resolution changes. */
+  resize(viewW: number, viewH: number) {
     this.viewW = viewW;
     this.viewH = viewH;
   }

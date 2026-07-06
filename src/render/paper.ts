@@ -73,4 +73,12 @@ export class PaperTexture {
   draw(ctx: CanvasRenderingContext2D) {
     ctx.drawImage(this.canvas, 0, 0);
   }
+
+  /** Re-render the texture at a new size (e.g. on viewport resize). */
+  resize(w: number, h: number) {
+    if (this.canvas.width === w && this.canvas.height === h) return;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.render(w, h);
+  }
 }

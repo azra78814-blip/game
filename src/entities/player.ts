@@ -509,9 +509,17 @@ export class Player implements Actor {
 
   private integrate(ctx: GameContext) {
     const dt = ctx.dt;
-    if (this.state === "idle" || (this.state === "attack" && this.stateTime > 0.16)) {
+    // Movement is allowed while idle and during attacks. With a mouse+keyboard
+    // the attack root only releases in the recovery tail (keeps swings weighty).
+    // On touch the joystick and attack button are separate thumbs, so a rooted
+    // swing makes movement feel broken while attacking — allow moving through
+    // the whole swing there, at a slightly quicker step.
+    const touch = ctx.input.usingTouch;
+    const attackMovable =
+      this.state === "attack" && (touch || this.stateTime > 0.16);
+    if (this.state === "idle" || attackMovable) {
       const mv = ctx.input.moveVector();
-      const target = this.state === "attack" ? 0.4 : 1;
+      const target = this.state === "attack" ? (touch ? 0.6 : 0.4) : 1;
       const spd = this.moveSpeed * this.stats.moveMult * target;
       this.vx = damp(this.vx, mv.x * spd, 14, dt);
       this.vy = damp(this.vy, mv.y * spd, 14, dt);
