@@ -140,13 +140,21 @@ export function drawDraft(
   options: Talisman[],
   mx: number,
   my: number,
-  canReroll: boolean
+  canReroll: boolean,
+  lockout = 0
 ): Button[] {
   // Dim backdrop.
   ctx.fillStyle = "rgba(20,16,10,0.35)";
   ctx.fillRect(0, 0, w, h);
 
-  title(ctx, w, "Choose a Talisman", "an offering rises from the ink", 108);
+  const locked = lockout > 0;
+  title(
+    ctx,
+    w,
+    "Choose a Talisman",
+    locked ? "steady your brush…" : "an offering rises from the ink",
+    108
+  );
 
   const buttons: Button[] = [];
   const cardW = 240;
@@ -156,12 +164,15 @@ export function drawDraft(
   let x = w / 2 - totalW / 2;
   const y = h / 2 - cardH / 2 + 20;
 
+  // Cards are dimmed and un-hoverable until the selection lockout expires.
+  ctx.globalAlpha = locked ? 0.55 : 1;
   for (const t of options) {
     const b: Button = { x, y, w: cardW, h: cardH, id: "pick", data: t };
-    drawTalismanCard(ctx, b, t, hit(b, mx, my));
+    drawTalismanCard(ctx, b, t, !locked && hit(b, mx, my));
     buttons.push(b);
     x += cardW + gap;
   }
+  ctx.globalAlpha = 1;
 
   if (canReroll) {
     const rb: Button = { x: w / 2 - 90, y: y + cardH + 26, w: 180, h: 44, id: "reroll" };

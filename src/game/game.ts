@@ -90,6 +90,9 @@ export class Game {
   private roomDrafted = false;
   private gate: { x: number; y: number; active: boolean } | null = null;
   private draftOptions: Talisman[] = [];
+  // Brief lockout after a draft opens so a click left over from combat can't
+  // instantly pick a random card.
+  private draftLockout = 0;
   private rng = new RNG(1);
   private runSeed = 1;
   private runEssence = 0;
@@ -190,6 +193,10 @@ export class Game {
         this.updatePlaying(worldDt, rawDt);
         break;
       case "draft":
+        this.draftLockout = Math.max(0, this.draftLockout - rawDt);
+        this.particles.update(rawDt);
+        this.updateAmbient(rawDt);
+        break;
       case "paused":
       case "gameover":
       case "victory":
@@ -494,6 +501,7 @@ export class Game {
       return;
     }
     this.state = "draft";
+    this.draftLockout = 1; // ~1s before a card can be picked
     audio.setIntensity(0.15);
   }
 
@@ -1005,7 +1013,7 @@ export class Game {
         buttons = drawShrine(ctx, this.w, this.h, this.meta, mx, my);
         break;
       case "draft":
-        buttons = drawDraft(ctx, this.w, this.h, this.draftOptions, mx, my, false);
+        buttons = drawDraft(ctx, this.w, this.h, this.draftOptions, mx, my, false, this.draftLockout);
         break;
       case "paused":
         buttons = drawPause(ctx, this.w, this.h, mx, my, audio.muted);
@@ -1021,7 +1029,10 @@ export class Game {
     // Cursor (brush tip) in menus and game.
     this.renderCursor(ctx, mx, my);
 
-    if (this.mouseClicked && !this.clickConsumed) {
+    // Ignore clicks during the draft's brief selection lockout so a leftover
+    // click from combat can't accidentally pick a card.
+    const locked = this.state === "draft" && this.draftLockout > 0;
+    if (this.mouseClicked && !this.clickConsumed && !locked) {
       for (const b of buttons) {
         if (hit(b, mx, my)) {
           this.onButton(b);
