@@ -29,8 +29,8 @@ interface ComboStep {
 }
 
 const LIGHT_COMBO: ComboStep[] = [
-  { windup: 0.07, active: 0.08, recover: 0.14, reach: 62, arc: 1.1, dmg: 10, knockback: 130, sweep: 1 },
-  { windup: 0.06, active: 0.08, recover: 0.14, reach: 66, arc: 1.2, dmg: 11, knockback: 140, sweep: -1 },
+  { windup: 0.06, active: 0.08, recover: 0.11, reach: 62, arc: 1.1, dmg: 10, knockback: 130, sweep: 1 },
+  { windup: 0.06, active: 0.08, recover: 0.11, reach: 66, arc: 1.2, dmg: 11, knockback: 140, sweep: -1 },
   { windup: 0.09, active: 0.1, recover: 0.24, reach: 78, arc: 1.6, dmg: 18, knockback: 300, sweep: 1 },
 ];
 
@@ -82,6 +82,10 @@ export class Player implements Actor {
   private parryCooldown = 0;
   parryWindow = 0; // >0 means actively parrying
   private parrySuccessFlash = 0;
+  private parryHaste = 0; // brief attack-speed burst after a clean parry
+
+  // Whether the current swing rolled a crit (drives impact-frame emphasis).
+  private curCrit = false;
 
   // Ink resource (spent by ability / heavy)
   ink = 100;
@@ -214,9 +218,11 @@ export class Player implements Actor {
     );
     ctx.particles.ring(this.x, this.y, 0.9, 70, Palette.vermilion);
     ctx.notify("PARRY", this.x, this.y - 34, Palette.vermilion);
-    // Restore ink and a bit of health on a clean parry.
+    // Restore ink and a bit of health on a clean parry, and grant a short
+    // attack-speed burst so a good read flows straight into aggression.
     this.ink = clamp(this.ink + 25, 0, this.maxInk);
     this.hp = clamp(this.hp + 4, 0, this.maxHp);
+    this.parryHaste = 1.2;
     this.comboCount += 1;
     this.comboTimer = 3;
 
@@ -259,6 +265,7 @@ export class Player implements Actor {
   private emitHit(ctx: GameContext) {
     const step = this.curStep!;
     const crit = fx.next() < this.stats.critChance;
+    this.curCrit = crit;
     const dmg =
       step.dmg * this.stats.damageMult * this.dynDamage * (crit ? this.stats.critMult : 1);
     const hit: HitInfo = {
@@ -289,6 +296,23 @@ export class Player implements Actor {
     this.comboCount += 1;
     this.comboTimer = 3;
     this.ink = clamp(this.ink + 4, 0, this.maxInk);
+
+    // Impact frame: weighty hits (finisher / heavy) bite harder, and crits pop
+    // a brief slow-mo. This layers on top of the enemy's own hurt feedback.
+    const finisher = this.curHeavy || this.comboIndex === LIGHT_COMBO.length - 1;
+    if (finisher) {
+      ctx.hitstop(this.curHeavy ? 95 : 70);
+      ctx.addScreenShake(this.curHeavy ? 0.5 : 0.34);
+      ctx.particles.ring(actor.x, actor.y, 0.9, this.curHeavy ? 110 : 84, Palette.ink);
+      ctx.particles.sparks(actor.x, actor.y, 6, Palette.vermilion);
+      if (this.curHeavy) {
+        // Recoil back off the blow for weight.
+        this.vx -= Math.cos(this.facing) * 90;
+        this.vy -= Math.sin(this.facing) * 90;
+      }
+    }
+    if (this.curCrit) ctx.slowmo(0.6, 70);
+
     this.talismans.onHit(this, actor, dmg, ctx);
   }
 
@@ -301,7 +325,7 @@ export class Player implements Actor {
     this.state = "dodge";
     this.stateTime = 0;
     this.iframes = 0.32 + this.stats.dodgeIframeBonus;
-    this.dodgeCooldown = 0.35;
+    this.dodgeCooldown = 0.28;
     this.comboWindow = 0;
     ctx.audio.dodge();
     ctx.particles.ring(this.x, this.y, 0.7, 44);
@@ -312,7 +336,7 @@ export class Player implements Actor {
   private startParry(ctx: GameContext) {
     this.state = "parry";
     this.stateTime = 0;
-    this.parryWindow = 0.18;
+    this.parryWindow = 0.2;
     this.parryCooldown = 0.5;
     ctx.audio.swing(0.6);
     const w = ctx.camera.screenToWorld(ctx.input.mouse.x, ctx.input.mouse.y);
@@ -358,6 +382,13 @@ export class Player implements Actor {
     this.flowingTimer = Math.max(0, this.flowingTimer - dt);
     this.talismans.onTick(this, dt, ctx);
 
+    // Aggression reward: a sustained combo sharpens the blade; a clean parry
+    // grants a short haste burst. (Movement momentum is applied in integrate.)
+    const momentum = Math.min(this.comboCount, 12) / 12;
+    this.dynAtkSpeed *= 1 + momentum * 0.12;
+    this.parryHaste = Math.max(0, this.parryHaste - dt);
+    if (this.parryHaste > 0) this.dynAtkSpeed *= 1.25;
+
     // Passive ink regen.
     this.ink = clamp(this.ink + 6 * dt, 0, this.maxInk);
 
@@ -369,19 +400,22 @@ export class Player implements Actor {
     }
 
     // ---- State machine ----
-    switch (this.state) {
-      case "idle":
-        this.handleIdle(ctx);
-        break;
-      case "attack":
-        this.updateAttack(ctx);
-        break;
-      case "dodge":
-        this.updateDodge(ctx);
-        break;
-      case "parry":
-        this.updateParry(ctx);
-        break;
+    // A buffered dodge/parry cancels whatever we're doing (dodge-canceling).
+    if (!this.tryCancels(ctx)) {
+      switch (this.state) {
+        case "idle":
+          this.handleIdle(ctx);
+          break;
+        case "attack":
+          this.updateAttack(ctx);
+          break;
+        case "dodge":
+          this.updateDodge(ctx);
+          break;
+        case "parry":
+          this.updateParry(ctx);
+          break;
+      }
     }
 
     // Combo window countdown.
@@ -399,16 +433,27 @@ export class Player implements Actor {
     }
   }
 
-  private handleIdle(ctx: GameContext) {
-    // Priority: parry > dodge > heavy > light > ability
-    if (ctx.input.consumeBuffered("parry", 160) && this.parryCooldown <= 0) {
-      this.startParry(ctx);
-      return;
-    }
-    if (ctx.input.consumeBuffered("dodge", 160) && this.dodgeCooldown <= 0) {
+  /**
+   * Buffered dodge/parry can interrupt ANY action (except while hurt/dead or
+   * already dodging) — this is the core of the responsive, cancel-heavy feel.
+   * Returns true if a cancel fired, so the caller skips the normal state update.
+   */
+  private tryCancels(ctx: GameContext): boolean {
+    if (this.state === "hurt" || this.state === "dodge") return false;
+    // Dodge takes priority (the reflexive "get out"), then parry.
+    if (this.dodgeCooldown <= 0 && ctx.input.consumeBuffered("dodge", 160)) {
       this.startDodge(ctx);
-      return;
+      return true;
     }
+    if (this.parryCooldown <= 0 && ctx.input.consumeBuffered("parry", 160)) {
+      this.startParry(ctx);
+      return true;
+    }
+    return false;
+  }
+
+  private handleIdle(ctx: GameContext) {
+    // Dodge/parry are handled globally by tryCancels; idle starts offense.
     if (ctx.input.consumeBuffered("heavy", 160) && this.ink >= 20) {
       this.ink -= 20;
       this.startAttack(HEAVY, true, ctx);
@@ -459,18 +504,11 @@ export class Player implements Actor {
       if (this.slashTrail.length > 16) this.slashTrail.shift();
     }
 
-    // Allow buffering the next action during recover.
-    if (t >= windup + active) {
-      // Dodge/parry cancel.
-      if (ctx.input.consumeBuffered("dodge", 160) && this.dodgeCooldown <= 0) {
-        this.startDodge(ctx);
-        return;
-      }
-      if (ctx.input.consumeBuffered("parry", 160) && this.parryCooldown <= 0) {
-        this.startParry(ctx);
-        return;
-      }
-      // Continue light combo.
+    // Chain the next attack early — as soon as the blade is most of the way
+    // through its active window — so combos flow without a stall. (Dodge/parry
+    // cancels are handled globally by tryCancels, so a swing can be broken at
+    // any time, not just here.)
+    if (t >= windup + active * 0.6) {
       if (!this.curHeavy && ctx.input.consumeBuffered("light", 200)) {
         const next = (this.comboIndex + 1) % LIGHT_COMBO.length;
         this.comboIndex = next;
@@ -492,9 +530,9 @@ export class Player implements Actor {
 
   private updateDodge(ctx: GameContext) {
     this.stateTime += ctx.dt;
-    const dur = 0.26;
+    const dur = 0.24;
     const t = this.stateTime / dur;
-    const speed = lerp(560, 120, easeOutCubic(clamp(t, 0, 1))) * this.stats.moveMult;
+    const speed = lerp(600, 130, easeOutCubic(clamp(t, 0, 1))) * this.stats.moveMult;
     this.vx = Math.cos(this.dodgeDir) * speed;
     this.vy = Math.sin(this.dodgeDir) * speed;
 
@@ -503,8 +541,27 @@ export class Player implements Actor {
       this.dashTrail.push({ x: this.x, y: this.y, a: 0.5 });
     }
 
+    // Dash-attack: cancel out of the dash into a lunging swing (dash → slash →
+    // dash flow). Available once past the initial burst so the dash still reads.
+    if (this.stateTime > 0.1) {
+      if (ctx.input.consumeBuffered("heavy", 200) && this.ink >= 20) {
+        this.ink -= 20;
+        this.startAttack(HEAVY, true, ctx);
+        return;
+      }
+      if (ctx.input.consumeBuffered("light", 200)) {
+        this.comboIndex = 0;
+        this.startAttack(LIGHT_COMBO[0], false, ctx);
+        return;
+      }
+    }
+
     if (this.stateTime >= dur) {
       this.state = "idle";
+      // Carry a little dash momentum out so movement flows into the next action
+      // instead of stopping dead.
+      this.vx = Math.cos(this.dodgeDir) * 150 * this.stats.moveMult;
+      this.vy = Math.sin(this.dodgeDir) * 150 * this.stats.moveMult;
     }
   }
 
@@ -513,6 +570,20 @@ export class Player implements Actor {
     // Slow to a stop while bracing.
     this.vx *= 0.8;
     this.vy *= 0.8;
+    // Cancel the brace into an attack once the active window has passed, so a
+    // successful read flows straight into a punish. (Dodge is handled globally.)
+    if (this.parryWindow <= 0 && this.stateTime > 0.12) {
+      if (ctx.input.consumeBuffered("heavy", 200) && this.ink >= 20) {
+        this.ink -= 20;
+        this.startAttack(HEAVY, true, ctx);
+        return;
+      }
+      if (ctx.input.consumeBuffered("light", 200)) {
+        this.comboIndex = 0;
+        this.startAttack(LIGHT_COMBO[0], false, ctx);
+        return;
+      }
+    }
     if (this.stateTime >= 0.32) {
       this.state = "idle";
     }
@@ -520,18 +591,16 @@ export class Player implements Actor {
 
   private integrate(ctx: GameContext) {
     const dt = ctx.dt;
-    // Movement is allowed while idle and during attacks. With a mouse+keyboard
-    // the attack root only releases in the recovery tail (keeps swings weighty).
-    // On touch the joystick and attack button are separate thumbs, so a rooted
-    // swing makes movement feel broken while attacking — allow moving through
-    // the whole swing there, at a slightly quicker step.
+    // You are never fully rooted: you can drift through the whole attack swing
+    // (touch a touch quicker, since the joystick is a separate thumb). This is
+    // what makes offense feel mobile and aggressive rather than committal.
     const touch = ctx.input.usingTouch;
-    const attackMovable =
-      this.state === "attack" && (touch || this.stateTime > 0.16);
-    if (this.state === "idle" || attackMovable) {
+    if (this.state === "idle" || this.state === "attack") {
       const mv = ctx.input.moveVector();
-      const target = this.state === "attack" ? (touch ? 0.6 : 0.4) : 1;
-      const spd = this.moveSpeed * this.stats.moveMult * target;
+      // A live combo adds a little extra glide (movement momentum).
+      const moMove = 1 + (Math.min(this.comboCount, 12) / 12) * 0.06;
+      const target = this.state === "attack" ? (touch ? 0.6 : 0.42) : 1;
+      const spd = this.moveSpeed * this.stats.moveMult * moMove * target;
       this.vx = damp(this.vx, mv.x * spd, 14, dt);
       this.vy = damp(this.vy, mv.y * spd, 14, dt);
       if (mv.x !== 0 || mv.y !== 0) this.walkCycle += dt * 12;
