@@ -782,11 +782,12 @@ export class Game {
     }
     ctx.globalAlpha = 1;
 
-    // Background decorations (mountains behind, with gentle parallax).
+    // Distant backdrop decorations (peaks behind, with gentle parallax).
+    const isBackdrop = (k: Decoration["kind"]) => k === "mountain" || k === "ashpeak";
     ctx.save();
     ctx.translate(this.camera.x * 0.12, this.camera.y * 0.12);
     for (const d of this.decorations)
-      if (d.kind === "mountain") drawDecoration(ctx, d, this.time);
+      if (isBackdrop(d.kind)) drawDecoration(ctx, d, this.time);
     ctx.restore();
 
     // Gate.
@@ -794,7 +795,7 @@ export class Game {
 
     // Ground decorations.
     for (const d of this.decorations)
-      if (d.kind !== "mountain") drawDecoration(ctx, d, this.time);
+      if (!isBackdrop(d.kind)) drawDecoration(ctx, d, this.time);
 
     // Entities sorted by y for depth.
     const ctxGame = this.mkContext(0);
@@ -829,10 +830,12 @@ export class Game {
     ctx.rect(-hw, -hh, hw * 2, hh * 2);
     ctx.clip();
     const type = this.roomPlan.type;
+    const ember = this.roomPlan.biome === "ember";
 
     // Base tint sets each chamber's mood.
     let tint = "rgba(0,0,0,0)";
-    if (type === "boss") tint = "rgba(60, 20, 14, 0.15)";
+    if (ember) tint = type === "boss" ? "rgba(96, 28, 14, 0.3)" : "rgba(74, 26, 14, 0.22)";
+    else if (type === "boss") tint = "rgba(60, 20, 14, 0.15)";
     else if (type === "elite") tint = "rgba(70, 40, 30, 0.10)";
     else if (type === "reward") tint = "rgba(150, 120, 50, 0.09)";
     if (tint !== "rgba(0,0,0,0)") {
@@ -840,7 +843,30 @@ export class Game {
       ctx.fillRect(-hw, -hh, hw * 2, hh * 2);
     }
 
-    if (type === "reward" || type === "boss") {
+    if (ember) {
+      // Scorched ground: dark char patches veined with molten cracks.
+      const rng = new RNG(this.roomPlan.seed + 777);
+      ctx.fillStyle = "rgba(18, 10, 6, 0.05)";
+      for (let i = 0; i < 24; i++) {
+        inkWash(ctx, rng.range(-hw, hw), rng.range(-hh, hh), rng.range(30, 80), 0.9, 0.06);
+      }
+      // Glowing fissures snaking across the floor.
+      ctx.strokeStyle = "rgba(200, 78, 28, 0.14)";
+      for (let i = 0; i < 7; i++) {
+        let x = rng.range(-hw, hw);
+        let y = rng.range(-hh, hh);
+        ctx.lineWidth = rng.range(1.5, 3.5);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        const segs = rng.int(3, 6);
+        for (let s = 0; s < segs; s++) {
+          x += rng.range(-80, 80);
+          y += rng.range(-60, 60);
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    } else if (type === "reward" || type === "boss") {
       // Zen raked-sand: concentric arcs radiating from a focal point.
       ctx.strokeStyle = "rgba(40, 32, 20, 0.06)";
       ctx.lineWidth = 2;

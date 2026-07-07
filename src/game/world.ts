@@ -11,6 +11,11 @@ import { enemyScore } from "../entities/enemy";
 
 export type RoomType = "combat" | "elite" | "reward" | "rest" | "miniboss" | "boss";
 
+// The run descends from a misty garden into a burning oni realm. The biome
+// drives the floor, palette and decoration set so the deep rooms read as a
+// wholly different place.
+export type Biome = "garden" | "ember";
+
 export interface RoomPlan {
   index: number;
   type: RoomType;
@@ -18,12 +23,14 @@ export interface RoomPlan {
   waves: EnemyKind[][];
   width: number;
   height: number;
+  biome: Biome;
 }
 
 export interface Decoration {
   x: number;
   y: number;
   kind:
+    // Garden set.
     | "bamboo"
     | "rock"
     | "grass"
@@ -34,9 +41,21 @@ export interface Decoration {
     | "tree"
     | "pond"
     | "pagoda"
-    | "stones";
+    | "stones"
+    // Ember set.
+    | "ashpeak"
+    | "deadtree"
+    | "spikerock"
+    | "spiderlily"
+    | "brazier"
+    | "emberpool";
   scale: number;
   seed: number;
+}
+
+/** Deep rooms (from the 8th onward) descend into the ember realm. */
+export function biomeForDepth(depth: number): Biome {
+  return depth >= 8 ? "ember" : "garden";
 }
 
 const COMBAT_POOL: EnemyKind[] = ["wisp", "archer", "charger", "brute"];
@@ -83,6 +102,7 @@ export class RunPlan {
         waves: combat ? this.buildWaves(i, type) : [],
         width: type === "boss" ? 1100 : type === "miniboss" ? 960 : 820,
         height: type === "boss" ? 760 : type === "miniboss" ? 680 : 620,
+        biome: biomeForDepth(i),
       });
     }
   }
@@ -96,9 +116,10 @@ export class RunPlan {
     for (let w = 0; w < waveCount; w++) {
       const wave: EnemyKind[] = [];
       let waveBudget = remaining / (waveCount - w);
-      // Early rooms skew to easy enemies; deeper rooms unlock the new archetypes.
+      // Early rooms skew to easy enemies; the new archetypes only appear after
+      // the 8th room (depth index >= 8).
       const pool =
-        depth < 1 ? (["wisp", "archer"] as EnemyKind[]) : depth >= 2 ? COMBAT_POOL_DEEP : COMBAT_POOL;
+        depth < 1 ? (["wisp", "archer"] as EnemyKind[]) : depth >= 8 ? COMBAT_POOL_DEEP : COMBAT_POOL;
       let guard = 0;
       while (waveBudget > 0 && guard++ < 40) {
         const kind = rng.pick(pool);
@@ -117,6 +138,7 @@ export class RunPlan {
 
 /** Generate scenic decorations arranged around the room edges. */
 export function decorateRoom(plan: RoomPlan): Decoration[] {
+  if (plan.biome === "ember") return decorateEmber(plan);
   const rng = new RNG(plan.seed + 13);
   const decos: Decoration[] = [];
   const hw = plan.width / 2;
@@ -217,6 +239,101 @@ export function decorateRoom(plan: RoomPlan): Decoration[] {
   return decos;
 }
 
+/** Ember-realm decorations: charred trees, jagged rock, braziers and lilies. */
+function decorateEmber(plan: RoomPlan): Decoration[] {
+  const rng = new RNG(plan.seed + 71);
+  const decos: Decoration[] = [];
+  const hw = plan.width / 2;
+  const hh = plan.height / 2;
+
+  // Jagged volcanic ridge across the far horizon (parallax at draw).
+  const peaks = rng.int(2, 4);
+  for (let i = 0; i < peaks; i++) {
+    decos.push({
+      x: -hw + (plan.width * (i + 0.5)) / peaks + rng.range(-60, 60),
+      y: -hh - 40,
+      kind: "ashpeak",
+      scale: rng.range(1.3, 2.5),
+      seed: rng.int(0, 1000),
+    });
+  }
+
+  // Jagged rock spurs and spider lilies around the perimeter.
+  const edgeCount = rng.int(10, 16);
+  for (let i = 0; i < edgeCount; i++) {
+    const onX = rng.bool();
+    let x: number;
+    let y: number;
+    if (onX) {
+      x = rng.range(-hw + 30, hw - 30);
+      y = rng.bool() ? -hh + rng.range(10, 50) : hh - rng.range(10, 50);
+    } else {
+      x = rng.bool() ? -hw + rng.range(10, 50) : hw - rng.range(10, 50);
+      y = rng.range(-hh + 30, hh - 30);
+    }
+    const kind = rng.weighted(
+      ["spikerock", "spiderlily", "deadtree"] as Decoration["kind"][],
+      [3, 2.5, 1.4]
+    );
+    decos.push({ x, y, kind, scale: rng.range(0.7, 1.4), seed: rng.int(0, 1000) });
+  }
+
+  // Scattered spider lilies dotting the interior.
+  for (let i = 0; i < rng.int(6, 12); i++) {
+    decos.push({
+      x: rng.range(-hw + 60, hw - 60),
+      y: rng.range(-hh + 60, hh - 60),
+      kind: "spiderlily",
+      scale: rng.range(0.5, 1),
+      seed: rng.int(0, 1000),
+    });
+  }
+
+  // A great charred tree (or burnt torii) as the back-wall centerpiece, flanked
+  // by braziers that light the chamber.
+  const backY = -hh + 30;
+  const centerpiece = rng.weighted(
+    ["deadtree", "torii", "pagoda"] as Decoration["kind"][],
+    [3, 1.2, 1.2]
+  );
+  decos.push({
+    x: rng.range(-hw * 0.4, hw * 0.4),
+    y: backY,
+    kind: centerpiece,
+    scale: rng.range(1.6, 2.2),
+    seed: rng.int(0, 1000),
+  });
+  decos.push({ x: -hw + 90, y: -hh + 90, kind: "brazier", scale: 1.2, seed: 1 });
+  decos.push({ x: hw - 90, y: -hh + 90, kind: "brazier", scale: 1.2, seed: 2 });
+
+  // A pool of molten ink off to one side in some rooms.
+  if (rng.bool(0.55)) {
+    decos.push({
+      x: rng.bool() ? -hw * 0.55 : hw * 0.55,
+      y: rng.range(hh * 0.2, hh * 0.5),
+      kind: "emberpool",
+      scale: rng.range(0.9, 1.4),
+      seed: rng.int(0, 1000),
+    });
+  }
+
+  // Charred stepping stones across the floor.
+  const stoneCount = rng.int(4, 7);
+  const sx0 = rng.range(-hw * 0.6, -hw * 0.2);
+  const sy0 = rng.range(-hh * 0.3, hh * 0.3);
+  for (let i = 0; i < stoneCount; i++) {
+    decos.push({
+      x: sx0 + i * rng.range(60, 90),
+      y: sy0 + Math.sin(i * 0.9 + rng.range(0, 3)) * 40,
+      kind: "spikerock",
+      scale: rng.range(0.5, 0.8),
+      seed: rng.int(0, 1000),
+    });
+  }
+
+  return decos;
+}
+
 // ---- Decoration drawing ---------------------------------------------------
 export function drawDecoration(ctx: CanvasRenderingContext2D, d: Decoration, time: number) {
   ctx.save();
@@ -255,6 +372,24 @@ export function drawDecoration(ctx: CanvasRenderingContext2D, d: Decoration, tim
       break;
     case "stones":
       drawSteppingStone(ctx, d.seed);
+      break;
+    case "ashpeak":
+      drawAshPeak(ctx, d.seed);
+      break;
+    case "deadtree":
+      drawDeadTree(ctx, d.seed, time);
+      break;
+    case "spikerock":
+      drawSpikeRock(ctx, d.seed);
+      break;
+    case "spiderlily":
+      drawSpiderLily(ctx, d.seed, time);
+      break;
+    case "brazier":
+      drawBrazier(ctx, time);
+      break;
+    case "emberpool":
+      drawEmberPool(ctx, d.seed, time);
       break;
   }
   ctx.restore();
@@ -500,4 +635,189 @@ function drawLantern(ctx: CanvasRenderingContext2D, time: number) {
   ctx.strokeStyle = Palette.ink;
   ctx.lineWidth = 1.5;
   ctx.strokeRect(-12, -40, 24, 12);
+}
+
+// ---- Ember-realm decorations ----------------------------------------------
+
+function drawAshPeak(ctx: CanvasRenderingContext2D, seed: number) {
+  // Dark volcanic ridge with a faint molten crown.
+  const w = 200;
+  ctx.globalAlpha = 0.24;
+  ctx.beginPath();
+  ctx.moveTo(-w, 60);
+  const peaks = 3;
+  const crown: [number, number][] = [];
+  for (let i = 0; i <= peaks; i++) {
+    const t = i / peaks;
+    const px = -w + t * w * 2;
+    const py = 60 - Math.sin(t * Math.PI) * (90 + ((seed + i) % 46));
+    ctx.lineTo(px, py + Math.sin(seed + i) * 12);
+    crown.push([px, py]);
+  }
+  ctx.lineTo(w, 60);
+  ctx.closePath();
+  ctx.fillStyle = inkTone(0.85, 1);
+  ctx.fill();
+  // Molten glow along the ridgeline.
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = "rgba(200, 70, 30, 0.6)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  crown.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawDeadTree(ctx: CanvasRenderingContext2D, seed: number, time: number) {
+  const sway = Math.sin(time * 0.7 + seed) * 2;
+  // Charred trunk.
+  ctx.strokeStyle = inkTone(0.95, 1);
+  ctx.lineWidth = 9;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(0, 6);
+  ctx.quadraticCurveTo(sway * 0.4, -50, sway, -96);
+  ctx.stroke();
+  // Bare, clawing branches.
+  ctx.lineWidth = 3.5;
+  const boughs = 5 + (seed % 3);
+  for (let i = 0; i < boughs; i++) {
+    const by = -46 - i * 12;
+    const dir = i % 2 === 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(sway * ((96 + by) / 96), by);
+    ctx.quadraticCurveTo(dir * 24, by - 16, dir * (40 + (seed % 18)), by - 34 + sway);
+    ctx.stroke();
+  }
+  // A few drifting embers rising from the crown.
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + seed;
+    const rise = ((time * 20 + i * 30 + seed) % 60);
+    ctx.globalAlpha = 0.6 * (1 - rise / 60);
+    ctx.fillStyle = i % 2 === 0 ? Palette.vermilion : "rgba(210, 120, 40, 0.9)";
+    ctx.beginPath();
+    ctx.arc(sway + Math.cos(a) * 26, -96 - rise + Math.sin(a) * 10, 2, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawSpikeRock(ctx: CanvasRenderingContext2D, seed: number) {
+  // Angular shards of blackened stone.
+  inkWash(ctx, 0, 6, 28, 0.6, 0.25);
+  ctx.fillStyle = inkTone(0.9, 1);
+  const shards = 3 + (seed % 3);
+  for (let i = 0; i < shards; i++) {
+    const ox = (i - shards / 2) * 12 + ((seed + i * 7) % 6);
+    const h = 20 + ((seed + i * 13) % 22);
+    ctx.beginPath();
+    ctx.moveTo(ox - 8, 6);
+    ctx.lineTo(ox + (i % 2 ? 5 : -5), -h);
+    ctx.lineTo(ox + 9, 6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Molten seam.
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = "rgba(200, 80, 30, 0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-10, 2);
+  ctx.lineTo(6, -6);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawSpiderLily(ctx: CanvasRenderingContext2D, seed: number, time: number) {
+  // Higanbana — a crimson spider lily; long stem, spidery recurved petals.
+  const sway = Math.sin(time * 1.6 + seed) * 3;
+  ctx.strokeStyle = inkTone(0.6, 0.9);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(sway * 0.5, -18, sway, -34);
+  ctx.stroke();
+  ctx.save();
+  ctx.translate(sway, -34);
+  ctx.strokeStyle = Palette.vermilion;
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + seed;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(Math.cos(a) * 8, Math.sin(a) * 8 - 4, Math.cos(a) * 13, Math.sin(a) * 13 - 8);
+    ctx.stroke();
+    // Curled stamen tip.
+    ctx.fillStyle = Palette.seal;
+    ctx.beginPath();
+    ctx.arc(Math.cos(a) * 13, Math.sin(a) * 13 - 8, 1.4, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBrazier(ctx: CanvasRenderingContext2D, time: number) {
+  const flick = 0.7 + Math.sin(time * 6) * 0.2 + Math.sin(time * 11 + 1) * 0.1;
+  // Legs + bowl.
+  ctx.strokeStyle = inkTone(0.9, 1);
+  ctx.lineWidth = 3;
+  for (const dir of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(dir * 12, -20);
+    ctx.lineTo(dir * 8, 0);
+    ctx.stroke();
+  }
+  ctx.fillStyle = inkTone(0.85, 1);
+  ctx.beginPath();
+  ctx.ellipse(0, -22, 16, 6, 0, 0, TAU);
+  ctx.fill();
+  // Fire glow + flames.
+  inkWash(ctx, 0, -30, 34, 0.2, flick * 0.5);
+  ctx.globalAlpha = flick;
+  for (let i = -1; i <= 1; i++) {
+    ctx.fillStyle = i === 0 ? "rgba(230, 150, 40, 0.9)" : Palette.vermilion;
+    const h = 22 + Math.sin(time * 8 + i) * 6;
+    ctx.beginPath();
+    ctx.moveTo(i * 6 - 5, -24);
+    ctx.quadraticCurveTo(i * 6, -24 - h, i * 6 + 3, -24);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawEmberPool(ctx: CanvasRenderingContext2D, seed: number, time: number) {
+  // A pool of molten ink: glowing red with slow ripples.
+  ctx.save();
+  ctx.scale(1, 0.55);
+  const r = 48;
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, r);
+  g.addColorStop(0, "rgba(210, 90, 30, 0.5)");
+  g.addColorStop(0.6, "rgba(150, 40, 20, 0.3)");
+  g.addColorStop(1, "rgba(60, 20, 14, 0.1)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(240, 160, 60, 0.3)";
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 3; i++) {
+    const rr = (time * 12 + i * 20 + seed) % r;
+    ctx.globalAlpha = 1 - rr / r;
+    ctx.beginPath();
+    ctx.arc(0, 0, rr, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  // Rising ember flecks.
+  for (let i = 0; i < 4; i++) {
+    const rise = (time * 26 + i * 22 + seed) % 44;
+    ctx.globalAlpha = 0.7 * (1 - rise / 44);
+    ctx.fillStyle = "rgba(240, 150, 50, 0.9)";
+    ctx.beginPath();
+    ctx.arc(Math.sin(time + i * 2 + seed) * 20, -rise, 1.6, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }

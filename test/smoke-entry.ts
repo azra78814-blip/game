@@ -95,12 +95,48 @@ for (let r = 0; r < 6; r++) {
   console.log(`[smoke] progressed, roomIndex=${(game as any).roomIndex}, state=${(game as any).state}`);
 }
 
-// 3) Jump to the boss room explicitly and exercise all boss moves.
-(game as any).roomIndex = 7;
-(game as any).loadRoom(7);
-step(400);
+// 2c) Swap between stacked active abilities (regression: actives must persist).
+{
+  const ta = (game as any).player.talismans;
+  const before = ta.actives.length;
+  ta.cycleActive();
+  ta.cycleActive();
+  console.log(`[smoke] ability swap ok, actives kept=${before}, index=${ta.activeIndex}`);
+}
+
+// 2d) Mid-run miniboss (the Calligrapher) — exercise the demoted-boss path.
+const minibossIdx = (game as any).run.rooms.findIndex((r: any) => r.type === "miniboss");
+if (minibossIdx >= 0) {
+  (game as any).roomIndex = minibossIdx;
+  (game as any).loadRoom(minibossIdx);
+  (game as any).state = "playing";
+  step(200);
+  console.log(`[smoke] miniboss room ok, variant=${(game as any).boss?.variant}`);
+}
+
+// 2e) Deep ember room — new biome floor/decor + new enemy archetypes (lancer,
+// bomber, shade) spawning and acting under the real loop.
+{
+  const deep = (game as any).run.rooms.findIndex(
+    (r: any) => r.biome === "ember" && (r.type === "combat" || r.type === "elite")
+  );
+  if (deep >= 0) {
+    (game as any).roomIndex = deep;
+    (game as any).loadRoom(deep);
+    (game as any).state = "playing";
+    step(300);
+    console.log(`[smoke] ember room ok, biome=${(game as any).roomPlan.biome}, enemies=${(game as any).enemies.length}`);
+  }
+}
+
+// 3) Jump to the final boss room and exercise all of the Oni's moves.
+const bossIdx = (game as any).run.rooms.length - 1;
+(game as any).roomIndex = bossIdx;
+(game as any).loadRoom(bossIdx);
+(game as any).state = "playing";
+step(500);
 const boss = (game as any).boss;
-console.log("[smoke] boss room ok, boss hp:", boss ? Math.round(boss.hp) : "none");
+console.log("[smoke] boss room ok, variant:", boss?.variant, "hp:", boss ? Math.round(boss.hp) : "none");
 
 // 4) Force boss through phases and death.
 if (boss) {
