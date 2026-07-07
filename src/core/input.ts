@@ -11,6 +11,7 @@ export type Action =
   | "dodge"
   | "parry"
   | "ability"
+  | "swapAbility"
   | "pause"
   | "confirm";
 
@@ -31,7 +32,8 @@ const KEY_MAP: Record<string, Action> = {
   KeyL: "parry",
   KeyF: "parry",
   KeyE: "ability",
-  KeyQ: "ability",
+  KeyQ: "swapAbility",
+  Tab: "swapAbility",
   Escape: "pause",
   Enter: "confirm",
 };
@@ -63,6 +65,7 @@ export function layoutTouchButtons(w: number, h: number): TouchButtonDef[] {
     { action: "heavy", x: w - 262, y: h - 150, r: 44, kanji: "重", label: "Heavy" },
     { action: "parry", x: w - 266, y: h - 300, r: 40, kanji: "受", label: "Parry" },
     { action: "ability", x: w - 400, y: h - 120, r: 38, kanji: "術", label: "Skill" },
+    { action: "swapAbility", x: w - 400, y: h - 235, r: 32, kanji: "換", label: "Swap" },
     { action: "pause", x: w * 0.5, y: 46, r: 26, kanji: "休", label: "Pause" },
   ];
 }
@@ -244,7 +247,7 @@ export class Input {
   private onKeyDown = (e: KeyboardEvent) => {
     const a = KEY_MAP[e.code];
     if (!a) return;
-    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code))
+    if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code))
       e.preventDefault();
     if (!this.down.has(a)) {
       this.pressedEdge.add(a);

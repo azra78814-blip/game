@@ -9,6 +9,7 @@ import type { Actor, GameContext, HitInfo } from "../game/types";
 // spacing, and punishing recovery windows rather than trading stats.
 
 type Phase = 1 | 2 | 3;
+export type BossVariant = "calligrapher" | "oni";
 type Move =
   | "idle"
   | "sweep" // wide brush slash, dodge through or around
@@ -17,6 +18,9 @@ type Move =
   | "spiral" // rotating bullet spiral, weave outward
   | "callig" // draws a damaging sigil on the floor, telegraph then detonate
   | "summon" // spawns wisps (phase 2+)
+  | "shockwave" // oni: slam emits expanding rings to outrun/dash through
+  | "orbitals" // oni: orbs circle then launch at the player
+  | "geyser" // oni: line of erupting pillars stepping toward the player
   | "transition";
 
 let hitId = 500000;
@@ -27,6 +31,18 @@ interface Sigil {
   r: number;
   t: number; // charge 0..1
   detonated: boolean;
+  pillar?: boolean; // draw as an erupting vertical geyser instead of a ring
+}
+
+interface Wave {
+  r: number; // current radius
+  t: number; // lifetime accumulator
+  hitSet: Set<unknown>; // players already hit (only ever the one player)
+}
+
+interface Orbital {
+  angle: number;
+  launched: boolean;
 }
 
 export class Boss implements Actor {
@@ -59,6 +75,10 @@ export class Boss implements Actor {
   private lungeHit: HitInfo | null = null;
   private bleedDps = 0;
   private bleedTime = 0;
+  readonly variant: BossVariant;
+  private waves: Wave[] = [];
+  private orbitals: Orbital[] = [];
+  private orbitAngle = 0;
 
   applyBleed(dps: number, duration: number) {
     this.bleedDps = Math.min(this.bleedDps + dps, dps * 6 + 60);
@@ -68,12 +88,20 @@ export class Boss implements Actor {
   // Name plate reveal.
   nameAlpha = 0;
 
-  constructor(x: number, y: number, hpScale = 1, dmgScale = 1) {
+  constructor(x: number, y: number, hpScale = 1, dmgScale = 1, variant: BossVariant = "calligrapher") {
     this.x = x;
     this.y = y;
+    this.variant = variant;
     this.maxHp = 900 * hpScale;
     this.hp = this.maxHp;
     this.dmgScale = dmgScale;
+  }
+
+  /** Display name + seal glyph for the boss bar, per variant. */
+  get title(): { name: string; kanji: string } {
+    return this.variant === "oni"
+      ? { name: "The Vermilion Oni", kanji: "鬼" }
+      : { name: "The Drowned Calligrapher", kanji: "墨" };
   }
 
   get phaseThresholds() {
@@ -112,6 +140,8 @@ export class Boss implements Actor {
     this.moveTime = 0;
     this.telegraph = 0;
     this.sigils = [];
+    this.waves = [];
+    this.orbitals = [];
     ctx.audio.bossRoar();
     ctx.addScreenShake(0.8);
     ctx.slowmo(0.4, 500);
@@ -208,7 +238,19 @@ export class Boss implements Actor {
       case "summon":
         this.updateSummon(ctx);
         break;
+      case "shockwave":
+        this.updateShockwave(ctx);
+        break;
+      case "orbitals":
+        this.updateOrbitals(ctx, p);
+        break;
+      case "geyser":
+        this.updateGeyser(ctx, p);
+        break;
     }
+
+    // Expanding shockwave rings live independently of the current move.
+    this.updateWaves(ctx);
 
     this.x += this.vx * dt;
     this.y += this.vy * dt;
@@ -234,17 +276,32 @@ export class Boss implements Actor {
     this.moveTime = 0;
     this.hitEmitted = false;
     this.telegraph = 0;
-    // Weighted move choice by phase.
-    const moves: Move[] = ["sweep", "thrust", "rain", "callig"];
-    const weights = [d < 160 ? 3 : 1, d < 260 ? 2.5 : 0.6, 1.5, 1.2];
-    if (this.phase >= 2) {
-      moves.push("spiral", "summon");
-      weights.push(1.6, 1.0);
-    }
-    if (this.phase >= 3) {
-      // more spirals & rain in the final phase
-      weights[2] += 1;
-      weights[weights.length - 2] += 1.2;
+    const moves: Move[] = [];
+    const weights: number[] = [];
+    if (this.variant === "oni") {
+      // Oni fights with concussive, space-controlling attacks.
+      moves.push("thrust", "shockwave", "orbitals", "geyser");
+      weights.push(d < 260 ? 2.4 : 0.7, d < 320 ? 2.2 : 1.4, 1.8, 1.6);
+      if (this.phase >= 2) {
+        moves.push("summon", "rain");
+        weights.push(1.0, 1.2);
+      }
+      if (this.phase >= 3) {
+        weights[1] += 1.2; // more shockwaves
+        weights[3] += 1.0; // more geysers
+      }
+    } else {
+      // Calligrapher: the original brush-and-sigil moveset.
+      moves.push("sweep", "thrust", "rain", "callig");
+      weights.push(d < 160 ? 3 : 1, d < 260 ? 2.5 : 0.6, 1.5, 1.2);
+      if (this.phase >= 2) {
+        moves.push("spiral", "summon");
+        weights.push(1.6, 1.0);
+      }
+      if (this.phase >= 3) {
+        weights[2] += 1;
+        weights[weights.length - 2] += 1.2;
+      }
     }
     let total = 0;
     for (const w of weights) total += w;
@@ -436,6 +493,110 @@ export class Boss implements Actor {
     if (this.moveTime > windup + 0.5) this.endMove();
   }
 
+  // ---- Oni moves ---------------------------------------------------------
+  private updateShockwave(ctx: GameContext) {
+    const dt = ctx.dt;
+    this.moveTime += dt;
+    const windup = 0.55 * this.speedScale();
+    this.telegraph = clamp(this.moveTime / windup, 0, 1);
+    this.vx = damp(this.vx, 0, 10, dt);
+    this.vy = damp(this.vy, 0, 10, dt);
+    if (this.moveTime >= windup && !this.hitEmitted) {
+      this.hitEmitted = true;
+      const rings = this.phase === 3 ? 3 : this.phase === 2 ? 2 : 1;
+      for (let i = 0; i < rings; i++) {
+        this.waves.push({ r: 20 + i * 46, t: -i * 0.22, hitSet: new Set() });
+      }
+      ctx.audio.bossRoar();
+      ctx.addScreenShake(0.6);
+      ctx.hitstop(50);
+      ctx.particles.ring(this.x, this.y, 0.9, 160, Palette.vermilion);
+    }
+    if (this.moveTime > windup + 0.5) this.endMove();
+  }
+
+  private updateWaves(ctx: GameContext) {
+    const dt = ctx.dt;
+    const p = ctx.player;
+    const speed = 300 + this.phase * 40;
+    const band = 34; // ring thickness for the damage check
+    for (const w of this.waves) {
+      w.t += dt;
+      if (w.t < 0) continue; // stagger before this ring starts expanding
+      w.r += speed * dt;
+      const d = dist(this.x, this.y, p.x, p.y);
+      if (!w.hitSet.has(p) && Math.abs(d - w.r) < band) {
+        w.hitSet.add(p);
+        p.hurt(16 * this.dmgScale, this.x, this.y, 420, ctx);
+      }
+    }
+    this.waves = this.waves.filter((w) => w.r < 760);
+  }
+
+  private updateOrbitals(ctx: GameContext, p: Actor) {
+    const dt = ctx.dt;
+    this.moveTime += dt;
+    const windup = 0.6 * this.speedScale();
+    this.telegraph = clamp(this.moveTime / windup, 0, 1);
+    this.orbitAngle += dt * 2.4;
+    if (this.moveTime < windup) {
+      // Spin up the orbs during the telegraph.
+      if (this.orbitals.length === 0) {
+        const n = this.phase === 3 ? 6 : this.phase === 2 ? 5 : 4;
+        for (let i = 0; i < n; i++)
+          this.orbitals.push({ angle: (i / n) * TAU, launched: false });
+      }
+    } else if (!this.hitEmitted) {
+      // Launch every orb toward the player, fanned slightly.
+      this.hitEmitted = true;
+      const aim = angleTo(this.x, this.y, p.x, p.y);
+      for (let i = 0; i < this.orbitals.length; i++) {
+        const spread = (i - (this.orbitals.length - 1) / 2) * 0.12;
+        ctx.spawnEnemyProjectile(
+          this.x + Math.cos(this.orbitals[i].angle + this.orbitAngle) * 70,
+          this.y + Math.sin(this.orbitals[i].angle + this.orbitAngle) * 70,
+          aim + spread,
+          360 + this.phase * 30,
+          9 * this.dmgScale
+        );
+      }
+      ctx.audio.inkBurst();
+      ctx.addScreenShake(0.3);
+      this.orbitals = [];
+    }
+    if (this.moveTime > windup + 0.4) {
+      this.orbitals = [];
+      this.endMove();
+    }
+  }
+
+  private updateGeyser(ctx: GameContext, p: Actor) {
+    const dt = ctx.dt;
+    this.moveTime += dt;
+    const windup = 0.3;
+    if (this.moveTime < windup) {
+      this.telegraph = this.moveTime / windup;
+    } else if (!this.hitEmitted) {
+      this.hitEmitted = true;
+      // A line of erupting pillars marching from the boss toward the player.
+      const n = this.phase === 3 ? 6 : this.phase === 2 ? 5 : 4;
+      const a = angleTo(this.x, this.y, p.x, p.y);
+      const step = 96;
+      for (let i = 0; i < n; i++) {
+        this.sigils.push({
+          x: this.x + Math.cos(a) * (80 + i * step),
+          y: this.y + Math.sin(a) * (80 + i * step),
+          r: 46,
+          t: -i * 0.14, // ripple outward in sequence
+          detonated: false,
+          pillar: true,
+        });
+      }
+      ctx.audio.swing(1.2);
+    }
+    if (this.moveTime > windup + 0.5) this.endMove();
+  }
+
   private updateSigils(ctx: GameContext) {
     const dt = ctx.dt;
     const chargeSpeed = this.phase === 3 ? 1.1 : 0.8;
@@ -470,6 +631,8 @@ export class Boss implements Actor {
   draw(ctx: CanvasRenderingContext2D, g: GameContext) {
     // Floor sigils.
     for (const s of this.sigils) this.drawSigil(ctx, s);
+    // Expanding shockwave rings.
+    for (const w of this.waves) this.drawWave(ctx, w);
 
     // Shadow.
     inkWash(ctx, this.x, this.y + this.radius * 0.7, this.radius * 2.2, 0.55, 0.4);
@@ -477,12 +640,36 @@ export class Boss implements Actor {
     // Telegraph visuals per move.
     this.drawTelegraph(ctx);
 
+    // Orbiting orbs (drawn around the boss during the orbitals wind-up).
+    for (const o of this.orbitals) {
+      const ox = this.x + Math.cos(o.angle + this.orbitAngle) * 70;
+      const oy = this.y + Math.sin(o.angle + this.orbitAngle) * 70;
+      inkWash(ctx, ox, oy, 16, 0.4, 0.5);
+      ctx.fillStyle = Palette.vermilion;
+      ctx.beginPath();
+      ctx.arc(ox, oy, 6, 0, TAU);
+      ctx.fill();
+    }
+
     ctx.save();
     ctx.translate(this.x, this.y);
     const breathe = 1 + Math.sin(this.wobble * 1.5) * 0.03;
     ctx.scale(breathe, breathe);
     const tone = this.flash > 0 ? 0.4 : 0.95;
 
+    if (this.variant === "oni") this.drawOni(ctx, tone);
+    else this.drawCalligrapher(ctx, tone);
+
+    ctx.restore();
+
+    if (this.flash > 0.4) {
+      ctx.globalAlpha = (this.flash - 0.4) * 0.5;
+      inkBlob(ctx, this.x, this.y, this.radius + 5, 0.2, 0.2, 14, this.wobble);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  private drawCalligrapher(ctx: CanvasRenderingContext2D, tone: number) {
     // Flowing robe — several overlapping downward strokes.
     const sway = Math.sin(this.wobble) * 6;
     for (let i = -2; i <= 2; i++) {
@@ -499,36 +686,85 @@ export class Boss implements Actor {
         i * 17 + 40
       );
     }
-    // Broad shoulders / mantle.
     brushStroke(ctx, -this.radius * 1.2, -this.radius * 0.4, this.radius * 1.2, -this.radius * 0.4, this.radius * 0.7, tone, 0.2, 71);
-
-    // Head — hooded.
     inkBlob(ctx, 0, -this.radius * 1.1, this.radius * 0.5, tone, 0.25, 14, this.wobble);
-
     // Long brush-weapon held to the side, angled toward facing.
     ctx.save();
     ctx.rotate(this.facing);
     brushStroke(ctx, 10, 0, 90, 0, 8, 0.9, 0.15);
     inkBlob(ctx, 92, 0, 7, 0.95, 0.4, 10, this.wobble);
     ctx.restore();
+    this.drawEyes(ctx, -6, 6, -this.radius * 1.1);
+  }
 
-    // Phase eyes — burn brighter each phase.
+  private drawOni(ctx: CanvasRenderingContext2D, tone: number) {
+    // Squat, heavy-shouldered demon: broad torso, two horns, a war club.
+    const sway = Math.sin(this.wobble) * 4;
+    // Bulky torso.
+    inkBlob(ctx, sway * 0.3, 0, this.radius * 1.1, tone, 0.28, 16, 40);
+    // Massive shoulders.
+    brushStroke(ctx, -this.radius * 1.35, -this.radius * 0.5, this.radius * 1.35, -this.radius * 0.5, this.radius * 0.85, tone, 0.24, 71);
+    // Head.
+    inkBlob(ctx, sway * 0.4, -this.radius * 1.15, this.radius * 0.6, tone, 0.24, 14, this.wobble);
+    // Two curved horns.
+    ctx.strokeStyle = inkTone(tone, 1);
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    for (const dir of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(dir * this.radius * 0.36, -this.radius * 1.5);
+      ctx.quadraticCurveTo(dir * this.radius * 0.95, -this.radius * 2.1, dir * this.radius * 0.55, -this.radius * 2.3);
+      ctx.stroke();
+    }
+    // Iron-studded club (kanabo) swung to the facing side.
+    ctx.save();
+    ctx.rotate(this.facing);
+    brushStroke(ctx, 12, 0, 84, 0, 12, 0.85, 0.16);
+    inkBlob(ctx, 92, 0, 16, 0.9, 0.35, 12, this.wobble);
+    ctx.fillStyle = Palette.vermilion;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * TAU + this.wobble;
+      ctx.beginPath();
+      ctx.arc(92 + Math.cos(a) * 9, Math.sin(a) * 9, 1.6, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+    // Glowing eyes + a fanged grin.
+    this.drawEyes(ctx, -7, 7, -this.radius * 1.2);
+    ctx.strokeStyle = Palette.vermilion;
+    ctx.globalAlpha = 0.5 + 0.14 * this.phase;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-7, -this.radius * 0.95);
+    ctx.lineTo(7, -this.radius * 0.95);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  private drawEyes(ctx: CanvasRenderingContext2D, lx: number, rx: number, y: number) {
     ctx.fillStyle = Palette.vermilion;
     const eyeGlow = 2 + this.phase;
     ctx.globalAlpha = 0.6 + 0.13 * this.phase;
     ctx.beginPath();
-    ctx.arc(-6, -this.radius * 1.1, eyeGlow, 0, TAU);
-    ctx.arc(6, -this.radius * 1.1, eyeGlow, 0, TAU);
+    ctx.arc(lx, y, eyeGlow, 0, TAU);
+    ctx.arc(rx, y, eyeGlow, 0, TAU);
     ctx.fill();
     ctx.globalAlpha = 1;
+  }
 
-    ctx.restore();
-
-    if (this.flash > 0.4) {
-      ctx.globalAlpha = (this.flash - 0.4) * 0.5;
-      inkBlob(ctx, this.x, this.y, this.radius + 5, 0.2, 0.2, 14, this.wobble);
-      ctx.globalAlpha = 1;
-    }
+  private drawWave(ctx: CanvasRenderingContext2D, w: Wave) {
+    if (w.t < 0) return;
+    const fade = clamp(1 - w.r / 760, 0, 1);
+    ctx.globalAlpha = 0.5 * fade;
+    ctx.strokeStyle = Palette.vermilion;
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, w.r, 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = 0.2 * fade;
+    ctx.lineWidth = 22;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   private drawTelegraph(ctx: CanvasRenderingContext2D) {
@@ -544,12 +780,34 @@ export class Boss implements Actor {
       ctx.moveTo(this.x, this.y);
       ctx.lineTo(this.x + Math.cos(this.aimAngle) * 300, this.y + Math.sin(this.aimAngle) * 300);
       ctx.stroke();
-    } else if (this.move === "rain" || this.move === "spiral" || this.move === "summon") {
+    } else if (this.move === "shockwave") {
+      // Pulsing charge ring hints at the slam about to erupt.
+      ctx.strokeStyle = Palette.vermilion;
+      ctx.lineWidth = 3 + t * 8;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius + 14 + t * 40, 0, TAU);
+      ctx.stroke();
+    } else if (
+      this.move === "rain" ||
+      this.move === "spiral" ||
+      this.move === "summon" ||
+      this.move === "orbitals"
+    ) {
       ctx.strokeStyle = Palette.vermilionSoft;
       ctx.lineWidth = 2 + t * 3;
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.radius + 10 + t * 20, 0, TAU);
       ctx.stroke();
+    } else if (this.move === "geyser") {
+      // Dotted lane toward the player where the pillars will erupt.
+      ctx.strokeStyle = Palette.vermilionSoft;
+      ctx.lineWidth = 2 + t * 4;
+      ctx.setLineDash([10, 12]);
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(this.x + Math.cos(this.aimAngle) * 560, this.y + Math.sin(this.aimAngle) * 560);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.globalAlpha = 1;
   }
@@ -558,6 +816,27 @@ export class Boss implements Actor {
     const t = clamp(s.t, 0, 1);
     ctx.save();
     ctx.translate(s.x, s.y);
+    if (s.pillar) {
+      // Geyser: a marked spot that spits an ink column as it charges.
+      ctx.globalAlpha = 0.3 + t * 0.5;
+      ctx.strokeStyle = Palette.vermilion;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, s.r * 0.7, s.r * 0.32, 0, 0, TAU);
+      ctx.stroke();
+      const h = t * s.r * 1.9;
+      ctx.globalAlpha = 0.2 + t * 0.55;
+      ctx.fillStyle = Palette.vermilionSoft;
+      ctx.beginPath();
+      ctx.moveTo(-s.r * 0.45, 0);
+      ctx.quadraticCurveTo(-s.r * 0.2, -h, 0, -h);
+      ctx.quadraticCurveTo(s.r * 0.2, -h, s.r * 0.45, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      return;
+    }
     // Charging ring fills with vermilion.
     ctx.globalAlpha = 0.25 + t * 0.4;
     ctx.strokeStyle = Palette.vermilion;

@@ -455,12 +455,46 @@ function clampProj(ax: number, ay: number, bx: number, by: number, px: number, p
 export class TalismanState {
   owned: Talisman[] = [];
   private counts = new Map<string, number>();
-  active: Talisman | null = null;
+  // Every active ability the player has drafted (kept, never overwritten). The
+  // ability button uses `activeIndex`; a swap control cycles it. Each ability
+  // tracks its own cooldown so swapping never shares or resets timers.
+  actives: Talisman[] = [];
+  activeIndex = 0;
+  private cooldowns = new Map<string, number>();
+
+  /** The currently equipped active ability (bound to E / 術). */
+  get active(): Talisman | null {
+    return this.actives[this.activeIndex] ?? null;
+  }
 
   add(t: Talisman) {
     this.owned.push(t);
     this.counts.set(t.id, (this.counts.get(t.id) ?? 0) + 1);
-    if (t.kind === "active") this.active = t;
+    if (t.kind === "active" && !this.actives.some((a) => a.id === t.id)) {
+      this.actives.push(t);
+      this.activeIndex = this.actives.length - 1; // auto-equip the newest
+    }
+  }
+
+  /** Cycle to the next active ability; no-op with 0 or 1 owned. */
+  cycleActive(): Talisman | null {
+    if (this.actives.length > 1) {
+      this.activeIndex = (this.activeIndex + 1) % this.actives.length;
+    }
+    return this.active;
+  }
+
+  /** Remaining cooldown (seconds) for an ability id. */
+  remainingCooldown(id: string): number {
+    return this.cooldowns.get(id) ?? 0;
+  }
+
+  tickCooldowns(dt: number) {
+    for (const id of Array.from(this.cooldowns.keys())) {
+      const next = (this.cooldowns.get(id) ?? 0) - dt;
+      if (next <= 0) this.cooldowns.delete(id);
+      else this.cooldowns.set(id, next);
+    }
   }
 
   count(id: string): number {
@@ -500,13 +534,15 @@ export class TalismanState {
       ctx.notify("no talisman", p.x, p.y - 30, Palette.ink50);
       return;
     }
-    if (p.abilityCooldown > 0) return;
+    if ((this.cooldowns.get(t.id) ?? 0) > 0) return;
     if ((t.inkCost ?? 0) > p.ink) {
       ctx.notify("low ink", p.x, p.y - 30, Palette.indigo);
       return;
     }
     p.ink = clamp(p.ink - (t.inkCost ?? 0), 0, p.maxInk);
-    p.abilityCooldown = t.activeCooldown ?? 3;
+    const cd = t.activeCooldown ?? 3;
+    this.cooldowns.set(t.id, cd);
+    p.abilityCooldown = cd; // mirror for HUD / legacy reads
     t.activate(p, ctx);
   }
 }

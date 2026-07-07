@@ -325,7 +325,18 @@ export class Player implements Actor {
 
     this.dodgeCooldown = Math.max(0, this.dodgeCooldown - dt);
     this.parryCooldown = Math.max(0, this.parryCooldown - dt);
-    this.abilityCooldown = Math.max(0, this.abilityCooldown - dt);
+    // Abilities each keep their own cooldown in the talisman state; mirror the
+    // equipped one into abilityCooldown for the HUD sweep and legacy reads.
+    this.talismans.tickCooldowns(dt);
+    this.abilityCooldown = this.talismans.remainingCooldown(this.talismans.active?.id ?? "");
+    // Swap the equipped active ability (kept, never discarded).
+    if (ctx.input.pressed("swapAbility") && this.talismans.actives.length > 1) {
+      const t = this.talismans.cycleActive();
+      if (t) {
+        ctx.notify(`${t.kanji} ${t.name}`, this.x, this.y - 42, Palette.indigo);
+        ctx.audio.uiSelect();
+      }
+    }
     this.hurtCooldown = Math.max(0, this.hurtCooldown - dt);
     this.iframes = Math.max(0, this.iframes - dt);
     this.parryWindow = Math.max(0, this.parryWindow - dt);

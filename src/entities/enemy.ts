@@ -4,7 +4,7 @@ import { brushStroke, inkBlob, inkComma, inkWash, slashArc } from "../render/bru
 import { inkTone, Palette } from "../render/palette";
 import type { Actor, GameContext, HitInfo } from "../game/types";
 
-export type EnemyKind = "wisp" | "archer" | "charger" | "brute";
+export type EnemyKind = "wisp" | "archer" | "charger" | "brute" | "lancer" | "bomber" | "shade";
 
 let hitIdCounter = 100000;
 
@@ -74,9 +74,58 @@ const ARCHETYPES: Record<EnemyKind, Archetype> = {
     color: 0.95,
     score: 3,
   },
+  // Polearm skirmisher: hangs at range then stabs a long, narrow line — punish
+  // by sidestepping rather than backing straight up.
+  lancer: {
+    hp: 44,
+    radius: 16,
+    speed: 92,
+    contactDamage: 0,
+    attackRange: 172,
+    attackWindup: 0.55,
+    attackDamage: 16,
+    attackCooldown: 2.0,
+    color: 0.8,
+    score: 2,
+  },
+  // Drifting lantern-bomb: rushes in and self-detonates in a radial blast.
+  bomber: {
+    hp: 26,
+    radius: 15,
+    speed: 108,
+    contactDamage: 0,
+    attackRange: 72,
+    attackWindup: 0.62,
+    attackDamage: 26,
+    attackCooldown: 999,
+    color: 0.7,
+    score: 2,
+  },
+  // Blink assassin: teleports to a flank then delivers a quick short slash.
+  shade: {
+    hp: 30,
+    radius: 13,
+    speed: 122,
+    contactDamage: 0,
+    attackRange: 60,
+    attackWindup: 0.28,
+    attackDamage: 12,
+    attackCooldown: 1.6,
+    color: 0.5,
+    score: 2,
+  },
 };
 
-type AIState = "spawn" | "approach" | "windup" | "attack" | "recover" | "charge" | "stagger";
+type AIState =
+  | "spawn"
+  | "approach"
+  | "windup"
+  | "attack"
+  | "recover"
+  | "charge"
+  | "stagger"
+  | "explode"
+  | "blink";
 
 export class Enemy implements Actor {
   x: number;
@@ -103,6 +152,8 @@ export class Enemy implements Actor {
   private chargeDir = 0;
   private hitEmitted = false;
   private windupAngle = 0;
+  private blinkX = 0;
+  private blinkY = 0;
   private hpScale: number;
   private activeHit: HitInfo | null = null;
   private bleedDps = 0;
@@ -147,10 +198,25 @@ export class Enemy implements Actor {
       this.staggerTime = 0.32;
     }
 
+    // Shades often blink away when struck (then re-engage from a new angle).
+    if (this.kind === "shade" && this.hp > 0 && this.ai !== "blink" && fx.bool(0.55)) {
+      this.startBlink(ctx.player);
+    }
+
     if (this.hp <= 0) {
       this.die(ctx);
     }
     return true;
+  }
+
+  private startBlink(p: Actor) {
+    this.ai = "blink";
+    this.stateTime = 0;
+    this.hitEmitted = false; // reused as "teleported yet?" flag during the blink
+    const ang = fx.range(0, TAU);
+    const r = fx.range(80, 130);
+    this.blinkX = clamp(p.x + Math.cos(ang) * r, -380, 380);
+    this.blinkY = clamp(p.y + Math.sin(ang) * r, -280, 280);
   }
 
   private die(ctx: GameContext) {
@@ -248,6 +314,14 @@ export class Enemy implements Actor {
           this.stateTime = 0;
         }
         break;
+
+      case "explode":
+        this.updateExplode(ctx);
+        break;
+
+      case "blink":
+        this.updateBlink(ctx, p);
+        break;
     }
 
     // Contact damage for chargers/brutes.
@@ -299,6 +373,8 @@ export class Enemy implements Actor {
     if (this.cooldown <= 0) {
       if (this.kind === "charger" && d < this.arch.attackRange && d > 60) {
         this.startCharge(toPlayer);
+      } else if (this.kind === "shade" && d < 320) {
+        this.startBlink(p);
       } else if (d <= this.arch.attackRange * (this.kind === "archer" ? 1 : 0.85)) {
         this.ai = "windup";
         this.stateTime = 0;
@@ -318,7 +394,6 @@ export class Enemy implements Actor {
   }
 
   private doAttack(ctx: GameContext, p: Actor) {
-    this.ai = this.kind === "charger" ? "charge" : "attack";
     this.stateTime = 0;
     this.hitEmitted = false;
     if (this.kind === "archer") {
@@ -333,24 +408,37 @@ export class Enemy implements Actor {
       ctx.audio.swing(0.7);
       this.ai = "recover";
     } else if (this.kind === "charger") {
+      this.ai = "charge";
       this.chargeDir = this.windupAngle;
       ctx.audio.swing(1.1);
+    } else if (this.kind === "bomber") {
+      this.ai = "explode";
+      ctx.audio.swing(0.9);
     } else {
-      ctx.audio.swing(1);
+      // Melee: wisp, brute, lancer, shade.
+      this.ai = "attack";
+      ctx.audio.swing(this.kind === "lancer" ? 1.2 : 1);
     }
   }
 
   private updateAttack(ctx: GameContext, p: Actor) {
     const dt = ctx.dt;
     this.stateTime += dt;
-    // Melee slash: spin up a cone hit and keep it live through the swing.
+    // Per-kind shape: the lancer stabs a long narrow line; the shade darts a
+    // quick short slash; wisp/brute swing a wider cone.
+    const lancer = this.kind === "lancer";
+    const shade = this.kind === "shade";
+    const arc = lancer ? 0.34 : shade ? 0.7 : 0.9;
+    const reach = this.arch.attackRange;
+    const lunge = lancer ? 360 : shade ? 150 : 180;
+    const activeEnd = shade ? 0.14 : 0.18;
     if (!this.hitEmitted && this.stateTime > 0.04) {
       this.activeHit = {
-        x: this.x + Math.cos(this.windupAngle) * this.arch.attackRange * 0.5,
-        y: this.y + Math.sin(this.windupAngle) * this.arch.attackRange * 0.5,
-        radius: this.arch.attackRange,
+        x: this.x + Math.cos(this.windupAngle) * reach * 0.5,
+        y: this.y + Math.sin(this.windupAngle) * reach * 0.5,
+        radius: reach,
         angle: this.windupAngle,
-        arc: 0.9,
+        arc,
         damage: this.arch.attackDamage * this.dmgScale,
         knockback: 240,
         team: "enemy",
@@ -359,18 +447,74 @@ export class Enemy implements Actor {
       };
       this.hitEmitted = true;
       // Lunge into the strike.
-      this.vx += Math.cos(this.windupAngle) * 180;
-      this.vy += Math.sin(this.windupAngle) * 180;
+      this.vx += Math.cos(this.windupAngle) * lunge;
+      this.vy += Math.sin(this.windupAngle) * lunge;
     }
-    if (this.activeHit && this.stateTime > 0.04 && this.stateTime < 0.18) {
-      this.activeHit.x = this.x + Math.cos(this.windupAngle) * this.arch.attackRange * 0.5;
-      this.activeHit.y = this.y + Math.sin(this.windupAngle) * this.arch.attackRange * 0.5;
+    if (this.activeHit && this.stateTime > 0.04 && this.stateTime < activeEnd) {
+      this.activeHit.x = this.x + Math.cos(this.windupAngle) * reach * 0.5;
+      this.activeHit.y = this.y + Math.sin(this.windupAngle) * reach * 0.5;
       ctx.hits.push(this.activeHit);
     }
-    if (this.stateTime > 0.22) {
+    if (this.stateTime > activeEnd + 0.04) {
       this.ai = "recover";
       this.stateTime = 0;
       this.activeHit = null;
+    }
+  }
+
+  private updateExplode(ctx: GameContext) {
+    const dt = ctx.dt;
+    this.stateTime += dt;
+    this.vx = damp(this.vx, 0, 12, dt);
+    this.vy = damp(this.vy, 0, 12, dt);
+    if (!this.hitEmitted && this.stateTime > 0.02) {
+      this.hitEmitted = true;
+      const blast: HitInfo = {
+        x: this.x,
+        y: this.y,
+        radius: 98,
+        angle: 0,
+        arc: Math.PI, // full circle
+        damage: this.arch.attackDamage * this.dmgScale,
+        knockback: 440,
+        team: "enemy",
+        id: hitIdCounter++,
+        hitSet: new Set(),
+      };
+      ctx.hits.push(blast);
+      ctx.particles.ring(this.x, this.y, 0.9, 210, Palette.vermilion);
+      for (let i = 0; i < 18; i++)
+        ctx.particles.splatter(this.x, this.y, (i / 18) * TAU, 1.9, 0.85);
+      ctx.audio.inkBurst();
+      ctx.addScreenShake(0.35);
+      // The lantern is consumed by its own blast.
+      this.die(ctx);
+    }
+  }
+
+  private updateBlink(ctx: GameContext, p: Actor) {
+    const dt = ctx.dt;
+    this.stateTime += dt;
+    this.vx = damp(this.vx, 0, 14, dt);
+    this.vy = damp(this.vy, 0, 14, dt);
+    // Vanish, reappear at the flank at the midpoint of the blink.
+    if (!this.hitEmitted && this.stateTime >= 0.09) {
+      this.hitEmitted = true;
+      ctx.particles.ring(this.x, this.y, 0.5, 70, Palette.indigo);
+      this.x = this.blinkX;
+      this.y = this.blinkY;
+      ctx.particles.ring(this.x, this.y, 0.6, 70, Palette.indigo);
+      for (let i = 0; i < 8; i++)
+        ctx.particles.splatter(this.x, this.y, (i / 8) * TAU, 0.9, 0.5);
+      this.spawnAnim = 0.5;
+    }
+    if (this.stateTime >= 0.2) {
+      // Emerge into a quick slash toward the player's new bearing.
+      this.ai = "windup";
+      this.stateTime = 0;
+      this.windupAngle = angleTo(this.x, this.y, p.x, p.y);
+      this.facing = this.windupAngle;
+      this.hitEmitted = false;
     }
   }
 
@@ -424,6 +568,24 @@ export class Enemy implements Actor {
         ctx.rotate(this.windupAngle);
         ctx.fillRect(0, -this.radius * tele, this.arch.attackRange, this.radius * 2 * tele);
         ctx.restore();
+      } else if (this.kind === "lancer") {
+        // Thin thrust line — telegraphs the narrow stab lane.
+        ctx.fillStyle = Palette.vermilionSoft;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.windupAngle);
+        const th = 3 + tele * 7;
+        ctx.fillRect(this.radius, -th / 2, this.arch.attackRange, th);
+        ctx.restore();
+      } else if (this.kind === "bomber") {
+        // Swelling blast circle warns of the detonation radius.
+        ctx.fillStyle = Palette.vermilionSoft;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 12 + tele * 96, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = Palette.vermilion;
+        ctx.lineWidth = 2;
+        ctx.stroke();
       } else {
         // Melee cone.
         slashArc(
@@ -461,22 +623,44 @@ export class Enemy implements Actor {
       case "brute":
         this.drawBrute(ctx, tone);
         break;
+      case "lancer":
+        this.drawLancer(ctx, tone);
+        break;
+      case "bomber":
+        this.drawBomber(ctx, tone);
+        break;
+      case "shade":
+        this.drawShade(ctx, tone);
+        break;
     }
     ctx.restore();
 
     // Active melee slash visual.
     if (this.ai === "attack" && this.stateTime < 0.2 && this.kind !== "archer") {
-      slashArc(
-        ctx,
-        this.x,
-        this.y,
-        this.arch.attackRange * 0.6,
-        this.windupAngle - 0.8,
-        1.6,
-        10,
-        0.9,
-        clamp(1 - this.stateTime / 0.2, 0, 1)
-      );
+      const fade = clamp(1 - this.stateTime / 0.2, 0, 1);
+      if (this.kind === "lancer") {
+        // A thin driven line for the thrust.
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.windupAngle);
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = inkTone(0.9, 1);
+        ctx.fillRect(this.radius, -3, this.arch.attackRange, 6);
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      } else {
+        slashArc(
+          ctx,
+          this.x,
+          this.y,
+          this.arch.attackRange * (this.kind === "shade" ? 0.5 : 0.6),
+          this.windupAngle - 0.8,
+          this.kind === "shade" ? 1.1 : 1.6,
+          10,
+          0.9,
+          fade
+        );
+      }
     }
 
     // HP pip (thin ink bar) when damaged.
@@ -555,6 +739,77 @@ export class Enemy implements Actor {
     ctx.arc(-5, -this.radius * 0.9, 2, 0, TAU);
     ctx.arc(5, -this.radius * 0.9, 2, 0, TAU);
     ctx.fill();
+  }
+
+  private drawLancer(ctx: CanvasRenderingContext2D, tone: number) {
+    // Lean figure shouldering a long polearm aimed along its facing.
+    brushStroke(ctx, 0, -this.radius, 0, this.radius, this.radius, tone, 0.2, this.bodySeed);
+    inkBlob(ctx, 0, -this.radius - 2, 5, tone, 0.2, 10, 3);
+    ctx.save();
+    ctx.rotate(this.facing);
+    ctx.strokeStyle = inkTone(tone, 1);
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-this.radius * 0.6, 0);
+    ctx.lineTo(this.arch.attackRange * 0.44, 0);
+    ctx.stroke();
+    inkComma(ctx, this.arch.attackRange * 0.44, 0, 8, 0.2, tone);
+    ctx.restore();
+    ctx.fillStyle = Palette.vermilion;
+    ctx.beginPath();
+    ctx.arc(0, -this.radius * 0.4, 1.8, 0, TAU);
+    ctx.fill();
+  }
+
+  private drawBomber(ctx: CanvasRenderingContext2D, tone: number) {
+    // Paper lantern with a hot, pulsing core; the glow swells as it winds up.
+    const pulse =
+      this.ai === "windup" ? this.telegraph() : 0.4 + Math.sin(this.wobble * 3) * 0.2;
+    inkWash(ctx, 0, 0, this.radius * 1.9, 0.3, 0.25 + pulse * 0.45);
+    inkBlob(ctx, 0, 0, this.radius, tone, 0.18, 14, this.bodySeed);
+    ctx.strokeStyle = inkTone(0.9, 0.5);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, this.radius * 0.5, this.radius, 0, 0, TAU);
+    ctx.stroke();
+    // Top cap + fuse.
+    ctx.strokeStyle = inkTone(tone, 1);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -this.radius);
+    ctx.quadraticCurveTo(4, -this.radius - 8, 8, -this.radius - 6);
+    ctx.stroke();
+    // Glowing core.
+    ctx.globalAlpha = 0.5 + pulse * 0.5;
+    ctx.fillStyle = Palette.vermilion;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3 + pulse * 4, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  private drawShade(ctx: CanvasRenderingContext2D, tone: number) {
+    // Tall, wispy silhouette that fades out and back during a blink.
+    let alpha = 0.85;
+    if (this.ai === "blink") {
+      const t = this.stateTime;
+      alpha =
+        t < 0.09
+          ? lerp(0.85, 0.1, t / 0.09)
+          : lerp(0.1, 0.85, clamp((t - 0.09) / 0.11, 0, 1));
+    }
+    ctx.globalAlpha = alpha;
+    const sway = Math.sin(this.wobble * 1.5) * 3;
+    brushStroke(ctx, sway * 0.5, -this.radius * 1.2, -sway * 0.5, this.radius, this.radius * 0.9, tone, 0.35, this.bodySeed);
+    inkBlob(ctx, 0, -this.radius * 0.9, this.radius * 0.5, tone, 0.3, 12, this.wobble);
+    for (let i = 0; i < 3; i++)
+      inkBlob(ctx, Math.sin(this.wobble + i) * 5, this.radius * 0.3 + i * 4, (3 - i) * 2, tone * 0.9, 0.4, 8, i + this.wobble);
+    ctx.fillStyle = Palette.indigo;
+    ctx.beginPath();
+    ctx.arc(-3, -this.radius * 0.9, 1.6, 0, TAU);
+    ctx.arc(3, -this.radius * 0.9, 1.6, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 }
 

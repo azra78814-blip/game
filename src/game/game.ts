@@ -46,8 +46,12 @@ const ROOM_NAMES = [
   "Vermilion Bridge",
   "Sunken Garden",
   "Ashen Terrace",
+  "Lantern Causeway",
   "Weeping Pavilion",
+  "Moonlit Reliquary",
   "The Long Scroll",
+  "Cinder Atrium",
+  "Hollow Shrine",
   "Inkfall Sanctum",
 ];
 
@@ -439,9 +443,16 @@ export class Game {
   private updateWaves(dt: number) {
     if (this.boss) {
       if (this.boss.dead) {
-        // Victory after a beat.
         this.waveDelay -= dt;
-        if (this.waveDelay <= 0) this.endRun(true);
+        if (this.waveDelay <= 0) {
+          if (this.roomPlan.type === "miniboss") {
+            // A miniboss clears the room (draft + gate), not the run.
+            this.boss = null;
+            this.onRoomCleared();
+          } else {
+            this.endRun(true); // final boss → victory
+          }
+        }
       }
       return;
     }
@@ -584,7 +595,7 @@ export class Game {
   private beginRun() {
     this.runSeed = (Math.random() * 1e9) >>> 0;
     this.rng = new RNG(this.runSeed);
-    this.run = new RunPlan(this.runSeed, 8);
+    this.run = new RunPlan(this.runSeed, 12);
     const bonuses = this.meta.startBonuses();
 
     const talismans = new TalismanState();
@@ -631,12 +642,23 @@ export class Game {
     const hpScale = 1 + index * 0.14;
     const dmgScale = 1 + index * 0.08;
 
-    if (this.roomPlan.type === "boss") {
-      const b = new Boss(this.roomPlan.width / 2 - 200, 0, 1 + index * 0.05, dmgScale);
+    if (this.roomPlan.type === "boss" || this.roomPlan.type === "miniboss") {
+      const isFinal = this.roomPlan.type === "boss";
+      // Final fight is the new Oni; the mid-run miniboss is the Calligrapher at
+      // reduced health so it reads as a wall, not the climax.
+      const bossHp = (1 + index * 0.05) * (isFinal ? 1 : 0.5);
+      const b = new Boss(
+        this.roomPlan.width / 2 - 200,
+        0,
+        bossHp,
+        dmgScale,
+        isFinal ? "oni" : "calligrapher"
+      );
       b.onSummon = (x, y) => this.spawnEnemy("wisp", x, y, hpScale, dmgScale);
       this.boss = b;
       audio.setIntensity(1);
-      this.waveDelay = 2.6; // beat between the boss's death and the victory screen
+      // Beat before victory (final) or before the clear/draft (miniboss).
+      this.waveDelay = isFinal ? 2.6 : 1.4;
     } else if (this.roomPlan.type === "reward") {
       // Safe room: immediate draft.
       this.roomCleared = true;
@@ -650,6 +672,13 @@ export class Game {
     this.rebuildActors();
   }
   private rewardPending = false;
+
+  /** Display name for the current room (special-cased for boss/miniboss). */
+  private roomLabel(): string {
+    if (this.roomPlan.type === "boss") return "Inkfall Sanctum";
+    if (this.roomPlan.type === "miniboss") return "The Sealed Hall";
+    return ROOM_NAMES[this.roomIndex % ROOM_NAMES.length];
+  }
 
   private spawnWave(kinds: EnemyKind[]) {
     const hpScale = 1 + this.roomIndex * 0.14;
@@ -709,7 +738,7 @@ export class Game {
           this.h,
           this.player,
           this.roomIndex,
-          ROOM_NAMES[this.roomIndex % ROOM_NAMES.length],
+          this.roomLabel(),
           this.enemies.filter((e) => !e.dead).length + (this.boss && !this.boss.dead ? 1 : 0),
           this.time
         );
@@ -874,13 +903,14 @@ export class Game {
     ctx.textAlign = "center";
     ctx.fillStyle = Palette.ink;
     ctx.font = "900 40px 'Noto Serif JP', serif";
-    const name = this.roomPlan.type === "boss" ? "Inkfall Sanctum" : ROOM_NAMES[this.roomIndex % ROOM_NAMES.length];
-    ctx.fillText(name, this.w / 2, 150);
+    ctx.fillText(this.roomLabel(), this.w / 2, 150);
     ctx.fillStyle = Palette.seal;
     ctx.font = "500 15px 'Cinzel', serif";
     const label =
       this.roomPlan.type === "boss"
         ? "— final trial —"
+        : this.roomPlan.type === "miniboss"
+        ? "— the sealed one stirs —"
         : this.roomPlan.type === "elite"
         ? "— elite —"
         : this.roomPlan.type === "reward"
@@ -902,7 +932,7 @@ export class Game {
     ctx.globalAlpha = clamp(b.nameAlpha + 0.4, 0.4, 1);
     ctx.fillStyle = Palette.ink;
     ctx.font = "700 20px 'Noto Serif JP', serif";
-    ctx.fillText("溺 — The Drowned Calligrapher", this.w / 2, y - 12);
+    ctx.fillText(`${b.title.kanji} — ${b.title.name}`, this.w / 2, y - 12);
     ctx.globalAlpha = 1;
     // Bar backing.
     ctx.fillStyle = "rgba(30,26,18,0.15)";

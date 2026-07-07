@@ -49,9 +49,12 @@ export function drawHUD(
   const inkY = barY + 44;
   drawBrushBar(ctx, barX, inkY, barW * 0.72, 12, player.ink / player.maxInk, Palette.indigo, 0.8);
 
-  // ---- Ability icon (bottom-left) ----
+  // ---- Ability icon (bottom-left) + owned-ability tray ----
   const t = player.talismans.active;
-  if (t) drawAbilityIcon(ctx, 42, h - 78, t, player.abilityCooldown, t.activeCooldown ?? 1, player.ink >= (t.inkCost ?? 0));
+  if (t) {
+    drawAbilityIcon(ctx, 42, h - 78, t, player.abilityCooldown, t.activeCooldown ?? 1, player.ink >= (t.inkCost ?? 0));
+    if (player.talismans.actives.length > 1) drawAbilityTray(ctx, 42, h - 118, player);
+  }
 
   // ---- Owned talismans list (right side) ----
   drawTalismanColumn(ctx, w - 30, 44, player);
@@ -166,6 +169,49 @@ function drawAbilityIcon(
   ctx.fillStyle = Palette.ink70;
   ctx.font = "600 11px 'Cinzel', serif";
   ctx.fillText("E", 0, r + 14);
+  ctx.restore();
+}
+
+/** Row of chips for every owned active ability; the equipped one is highlighted
+ *  and each shows its own cooldown. A hint reminds the player how to swap. */
+function drawAbilityTray(ctx: CanvasRenderingContext2D, x: number, y: number, player: Player) {
+  const actives = player.talismans.actives;
+  const size = 24;
+  const gap = 6;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i < actives.length; i++) {
+    const a = actives[i];
+    const cx = x + i * (size + gap);
+    const selected = i === player.talismans.activeIndex;
+    ctx.fillStyle = selected ? Palette.seal : Palette.ink15;
+    roundRect(ctx, cx, y, size, size, 6);
+    ctx.fill();
+    if (selected) {
+      ctx.strokeStyle = Palette.vermilion;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    ctx.fillStyle = selected ? Palette.paper : Palette.ink70;
+    ctx.font = "900 15px 'Noto Serif JP', serif";
+    ctx.fillText(a.kanji, cx + size / 2, y + size / 2 + 1);
+    // Per-ability cooldown shade.
+    const cd = player.talismans.remainingCooldown(a.id);
+    if (cd > 0) {
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = Palette.ink;
+      const frac = clamp(cd / (a.activeCooldown ?? 1), 0, 1);
+      roundRect(ctx, cx, y + size * (1 - frac), size, size * frac, 6);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = Palette.ink50;
+  ctx.font = "600 10px 'Cinzel', serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Q / 換  swap", x, y - 6);
   ctx.restore();
 }
 

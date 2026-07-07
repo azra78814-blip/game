@@ -9,7 +9,7 @@ import { enemyScore } from "../entities/enemy";
 // gated (doors seal until cleared). Layout, enemy composition and decoration
 // are all seeded so a given run seed reproduces exactly.
 
-export type RoomType = "combat" | "elite" | "reward" | "rest" | "boss";
+export type RoomType = "combat" | "elite" | "reward" | "rest" | "miniboss" | "boss";
 
 export interface RoomPlan {
   index: number;
@@ -40,35 +40,49 @@ export interface Decoration {
 }
 
 const COMBAT_POOL: EnemyKind[] = ["wisp", "archer", "charger", "brute"];
+// New foes are introduced a little deeper so early rooms stay a gentle warm-up.
+const COMBAT_POOL_DEEP: EnemyKind[] = [
+  "wisp",
+  "archer",
+  "charger",
+  "brute",
+  "lancer",
+  "bomber",
+  "shade",
+];
 
 export class RunPlan {
   rooms: RoomPlan[] = [];
   readonly seed: number;
   private rng: RNG;
 
-  constructor(seed: number, length = 8) {
+  constructor(seed: number, length = 12) {
     this.seed = seed;
     this.rng = new RNG(seed);
     this.generate(length);
   }
 
   private generate(length: number) {
+    // A single mid-run miniboss sits at the halfway mark.
+    const minibossIndex = Math.floor(length / 2);
     for (let i = 0; i < length; i++) {
       let type: RoomType;
       if (i === length - 1) type = "boss";
       else if (i === 0) type = "combat";
+      else if (i === minibossIndex) type = "miniboss";
       else if (i % 3 === 2) type = "reward";
       else if (this.rng.bool(0.22)) type = "elite";
       else type = "combat";
 
       const roomSeed = this.rng.int(1, 1e9);
+      const combat = type !== "boss" && type !== "reward" && type !== "miniboss";
       this.rooms.push({
         index: i,
         type,
         seed: roomSeed,
-        waves: type === "boss" || type === "reward" ? [] : this.buildWaves(i, type),
-        width: type === "boss" ? 1100 : 820,
-        height: type === "boss" ? 760 : 620,
+        waves: combat ? this.buildWaves(i, type) : [],
+        width: type === "boss" ? 1100 : type === "miniboss" ? 960 : 820,
+        height: type === "boss" ? 760 : type === "miniboss" ? 680 : 620,
       });
     }
   }
@@ -82,8 +96,9 @@ export class RunPlan {
     for (let w = 0; w < waveCount; w++) {
       const wave: EnemyKind[] = [];
       let waveBudget = remaining / (waveCount - w);
-      // Early rooms skew to easy enemies.
-      const pool = depth < 1 ? (["wisp", "archer"] as EnemyKind[]) : COMBAT_POOL;
+      // Early rooms skew to easy enemies; deeper rooms unlock the new archetypes.
+      const pool =
+        depth < 1 ? (["wisp", "archer"] as EnemyKind[]) : depth >= 2 ? COMBAT_POOL_DEEP : COMBAT_POOL;
       let guard = 0;
       while (waveBudget > 0 && guard++ < 40) {
         const kind = rng.pick(pool);
